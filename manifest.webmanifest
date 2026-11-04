@@ -1,0 +1,20 @@
+{
+  "name": "我的C打卡",
+  "short_name": "C打卡",
+  "description": "本地优先的打卡 / 番茄钟 / 锦囊工具（单文件网页版）",
+  "lang": "zh-CN",
+  "dir": "ltr",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#f4f5f7",
+  "theme_color": "#4f6ef7",
+  "categories": ["productivity", "utilities", "lifestyle"],
+  "icons": [
+    { "src": "./icon-192.20261105-010046-228.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "./icon-512.20261105-010046-228.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "./maskable-512.20261105-010046-228.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" },
+    { "src": "./icon.20261105-010046-228.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+  ]
+}
