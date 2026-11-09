@@ -6,17 +6,17 @@
 //  · 静态资源（同域 GET）：缓存优先，命中即返；未命中试网络，网络也失败时再查缓存，
 //    最终兜底空响应（504），不让页面请求悬挂/白屏。
 //  · 数据层（IndexedDB/SQLite）本来就在本地，不归 SW 管。
-// 版本号由构建脚本注入（checkin-web-20261109-075150-152 占位 = 构建时间戳精确到毫秒，每次构建必不同）；
-// 图标文件名由构建注入版本号（["./icon.20261109-075150-152.svg","./icon-192.20261109-075150-152.png","./icon-512.20261109-075150-152.png","./maskable-512.20261109-075150-152.png"] 占位），不同构建不同名，不做同名覆盖。
+// 版本号由构建脚本注入（checkin-web-20261109-183946-036 占位 = 构建时间戳精确到毫秒，每次构建必不同）；
+// 图标文件名由构建注入版本号（["./icon.20261109-183946-036.svg","./icon-192.20261109-183946-036.png","./icon-512.20261109-183946-036.png","./maskable-512.20261109-183946-036.png"] 占位），不同构建不同名，不做同名覆盖。
 // 旧缓存于 activate 阶段自动清理（按当前缓存名动态比对，不写死旧名）+ clients.claim 立即接管。
 // 更新策略（2026-11-04 改为全自动）：新 SW 装好缓存后立即 skipWaiting 激活 + claim 接管，
 // activate 清完旧缓存后广播 SW_UPDATED；页面侧据此弹「点击立即生效」（reload 属用户主动，
 // 不会打断使用中的页面）。不点也不丢：导航网络优先（no-cache），下次打开必然拿到新版 HTML。
 // 旧设计「等用户确认才 skipWaiting」已废弃——提示一闪而过 / 用户不点 → 新 SW 永远 waiting、
 // 旧缓存永不清理，表现为「部署了新版本 PWA 却永远不更新」。
-const CACHE = 'checkin-web-20261109-075150-152'
+const CACHE = 'checkin-web-20261109-183946-036'
 // 构建期注入：版本化图标文件名数组（JSON），随构建变化 → 每次发版预缓存的都是新文件
-const ICON_FILES = ["./icon.20261109-075150-152.svg","./icon-192.20261109-075150-152.png","./icon-512.20261109-075150-152.png","./maskable-512.20261109-075150-152.png"]
+const ICON_FILES = ["./icon.20261109-183946-036.svg","./icon-192.20261109-183946-036.png","./icon-512.20261109-183946-036.png","./maskable-512.20261109-183946-036.png"]
 const CORE_ASSETS = ['./', './index.html', './manifest.webmanifest']
 const ASSETS = CORE_ASSETS.concat(ICON_FILES)
 
@@ -34,8 +34,13 @@ self.addEventListener('install', (e) => {
 })
 
 // 兼容保留：页面仍可主动发 SKIP_WAITING（skipWaiting 幂等，对已激活 SW 无副作用）
+// 批次 49-2：standalone PWA 页面启动时自报 client id，通知点击据此优先聚焦 PWA 窗口。
+// 旧实现 matchAll(includeUncontrolled:true) 后无条件 focus 第一个客户端，若用户浏览器里
+// 开着同源普通标签页且它排在前面，点通知会把整个浏览器窗口提到 PWA 前面抢走焦点。
+let standaloneClientId = ''
 self.addEventListener('message', (e) => {
   if (e.data && e.data.type === 'SKIP_WAITING') self.skipWaiting()
+  if (e.data && e.data.type === 'STANDALONE_CLIENT' && e.source) standaloneClientId = e.source.id || ''
 })
 
 // 通知点击（2026-11-04 通知渠道改造）：聚焦已打开的应用，没有则打开首页。
@@ -44,9 +49,14 @@ self.addEventListener('message', (e) => {
 self.addEventListener('notificationclick', (e) => {
   e.notification.close()
   e.waitUntil((async () => {
-    const cs = await self.clients.matchAll({ type: 'window', includeUncontrolled: true })
-    for (const c of cs) {
-      if ('focus' in c) { try { return await c.focus() } catch (_) { /* 聚焦失败落 openWindow */ } }
+    // 只取本 SW 受控窗口，且优先自报的 standalone 客户端；其次聚焦本来就在前台的客户端
+    // （不制造焦点切换）。二者都没有时交给 openWindow —— manifest 的
+    // launch_handler.client_mode=navigate-existing 会复用已开的 PWA 窗口。
+    const cs = await self.clients.matchAll({ type: 'window', includeUncontrolled: false })
+    const target = cs.find(c => standaloneClientId && c.id === standaloneClientId)
+      || cs.find(c => c.focused)
+    if (target && 'focus' in target) {
+      try { return await target.focus() } catch (_) { /* 聚焦失败落 openWindow */ }
     }
     return self.clients.openWindow('./')
   })())
