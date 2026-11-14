@@ -1,0 +1,23 @@
+{
+  "name": "性能测试观测台 · 独立工作台",
+  "short_name": "性能观测台",
+  "description": "性能测试观测台独立工作台（基于 /perf.db 真实数据，脱离工作台框架）",
+  "lang": "zh-CN",
+  "dir": "ltr",
+  "start_url": "./perf.html",
+  "scope": "./",
+  "display": "standalone",
+  "launch_handler": {
+    "client_mode": "navigate-existing"
+  },
+  "orientation": "any",
+  "background_color": "#f5f7f6",
+  "theme_color": "#0f766e",
+  "categories": ["developer", "productivity", "utilities"],
+  "icons": [
+    { "src": "./perf-icon-192.20261114-114533-645.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "./perf-icon-512.20261114-114533-645.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "./perf-maskable-512.20261114-114533-645.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" },
+    { "src": "./perf-icon.20261114-114533-645.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+  ]
+}
