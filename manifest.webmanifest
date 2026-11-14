@@ -15,9 +15,9 @@
   "theme_color": "#4f6ef7",
   "categories": ["productivity", "utilities", "lifestyle"],
   "icons": [
-    { "src": "./icon-192.20261114-191247-860.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
-    { "src": "./icon-512.20261114-191247-860.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
-    { "src": "./maskable-512.20261114-191247-860.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" },
-    { "src": "./icon.20261114-191247-860.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+    { "src": "./icon-192.20261114-195610-152.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "./icon-512.20261114-195610-152.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "./maskable-512.20261114-195610-152.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" },
+    { "src": "./icon.20261114-195610-152.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
   ]
 }
