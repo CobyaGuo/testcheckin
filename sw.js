@@ -6,28 +6,37 @@
 //  · 静态资源（同域 GET）：缓存优先，命中即返；未命中试网络，网络也失败时再查缓存，
 //    最终兜底空响应（504），不让页面请求悬挂/白屏。
 //  · 数据层（IndexedDB/SQLite）本来就在本地，不归 SW 管。
-// 版本号由构建脚本注入（checkin-web-20261113-182225-117 占位 = 构建时间戳精确到毫秒，每次构建必不同）；
-// 图标文件名由构建注入版本号（["./icon.20261113-182225-117.svg","./icon-192.20261113-182225-117.png","./icon-512.20261113-182225-117.png","./maskable-512.20261113-182225-117.png"] 占位），不同构建不同名，不做同名覆盖。
+// 版本号由构建脚本注入（checkin-web-20261114-095124-166 占位 = 构建时间戳精确到毫秒，每次构建必不同）；
+// 图标文件名由构建注入版本号（["./icon.20261114-095124-166.svg","./icon-192.20261114-095124-166.png","./icon-512.20261114-095124-166.png","./maskable-512.20261114-095124-166.png"] 占位），不同构建不同名，不做同名覆盖。
 // 旧缓存于 activate 阶段自动清理（按当前缓存名动态比对，不写死旧名）+ clients.claim 立即接管。
 // 更新策略（2026-11-04 改为全自动）：新 SW 装好缓存后立即 skipWaiting 激活 + claim 接管，
 // activate 清完旧缓存后广播 SW_UPDATED；页面侧据此弹「点击立即生效」（reload 属用户主动，
 // 不会打断使用中的页面）。不点也不丢：导航网络优先（no-cache），下次打开必然拿到新版 HTML。
 // 旧设计「等用户确认才 skipWaiting」已废弃——提示一闪而过 / 用户不点 → 新 SW 永远 waiting、
 // 旧缓存永不清理，表现为「部署了新版本 PWA 却永远不更新」。
-const CACHE = 'checkin-web-20261113-182225-117'
+//
+// 批次 139（独立工作台 auto.html 并入本 SW 预缓存）：浏览器同 scope 只允许一个 SW，
+// index.html（task 工作台）与 auto.html（自动化独立工作台）都在根路径 → 共用本根 SW，
+// 但两套壳与图标各自独立预缓存；缓存版本号 = checkin-web-<主版本>-auto-<auto版本>，
+// auto 分量（auto-20261114-095130-716 占位 + ["./auto-icon.20261114-095130-716.svg","./auto-icon-192.20261114-095130-716.png","./auto-icon-512.20261114-095130-716.png","./auto-maskable-512.20261114-095130-716.png"] 图标清单）由 vite.auto.config.js
+// 独立注入 —— 两套版本号各自随构建必变，互不覆盖。auto.html 导航兜底回 auto 壳（绝不
+// 回退成主应用壳）。auto.html 页面侧注入的注册脚本负责注册与「已更新」提示。
+const CACHE = 'checkin-web-20261114-095124-166' + '-auto-' + 'auto-20261114-095130-716'
 // 构建期注入：版本化图标文件名数组（JSON），随构建变化 → 每次发版预缓存的都是新文件
-const ICON_FILES = ["./icon.20261113-182225-117.svg","./icon-192.20261113-182225-117.png","./icon-512.20261113-182225-117.png","./maskable-512.20261113-182225-117.png"]
-const CORE_ASSETS = ['./', './index.html', './manifest.webmanifest', './manifest-pc.webmanifest']
-const ASSETS = CORE_ASSETS.concat(ICON_FILES)
+const ICON_FILES = ["./icon.20261114-095124-166.svg","./icon-192.20261114-095124-166.png","./icon-512.20261114-095124-166.png","./maskable-512.20261114-095124-166.png"]
+// 独立工作台 auto.html 的版本化图标（vite.auto.config.js 注入）
+const AUTO_ICON_FILES = ["./auto-icon.20261114-095130-716.svg","./auto-icon-192.20261114-095130-716.png","./auto-icon-512.20261114-095130-716.png","./auto-maskable-512.20261114-095130-716.png"]
+const CORE_ASSETS = ['./', './index.html', './auto.html', './manifest.webmanifest', './manifest-pc.webmanifest', './auto-manifest.webmanifest']
+const ASSETS = CORE_ASSETS.concat(ICON_FILES, AUTO_ICON_FILES)
 
 self.addEventListener('install', (e) => {
   e.waitUntil((async () => {
     const cache = await caches.open(CACHE)
-    // 核心壳（导航、HTML、manifest）必须成功，否则离线无兜底 —— 失败则安装失败（可接受，说明服务本身不可达）。
+    // 核心壳（导航、HTML、manifest，含 auto 壳）必须成功，否则离线无兜底 —— 失败则安装失败（可接受，说明服务本身不可达）。
     // 预缓存同样 no-cache：HTTP/CDN 缓存的旧 HTML 不许进新版本缓存（否则离线兜底的是旧壳）。
     await cache.addAll(CORE_ASSETS.map((u) => new Request(u, { cache: 'no-cache' })))
     // 图标逐个缓存：单个失败（404/MIME）不再致命，避免 addAll 原子失败导致整个 SW 永不激活 → 离线直接白屏。
-    await Promise.allSettled(ICON_FILES.map((f) => cache.add(f)))
+    await Promise.allSettled(ICON_FILES.concat(AUTO_ICON_FILES).map((f) => cache.add(f)))
     // 新版本缓存就绪 → 立即跳过 waiting 激活（自动更新）；activate 清旧缓存后广播 SW_UPDATED。
     await self.skipWaiting()
   })())
@@ -83,10 +92,19 @@ self.addEventListener('activate', (e) => {
   )
 })
 
-// 导航兜底：优先缓存的壳（index.html），都没有时给一段最小可渲染 HTML，
+// 导航兜底：优先缓存里的壳，都没有时给一段最小可渲染 HTML，
 // 保证「任何情况下不白屏」的最终防线（正常路径永远到不了这里）。
-async function shellFallback() {
+// 批次 139：auto.html 的导航兜底回 auto 壳，绝不回退成主应用壳（两套应用彻底独立）。
+async function shellFallback(req) {
   const cache = await caches.open(CACHE)
+  const wantsAuto = !!req && new URL(req.url).pathname.endsWith('/auto.html')
+  if (wantsAuto) {
+    return (await cache.match('./auto.html'))
+      || new Response(
+        '<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>自动化测试分析 · 独立工作台</title><p style="font-family:system-ui;padding:2rem">正在同步资源，请联网后刷新重试。</p>',
+        { status: 200, headers: { 'Content-Type': 'text/html; charset=utf-8' } }
+      )
+  }
   return (await cache.match('./index.html'))
     || (await cache.match('./'))
     || new Response(
@@ -110,7 +128,7 @@ self.addEventListener('fetch', (e) => {
         const resp = await fetch(req, { cache: 'no-cache' })
         if (resp && resp.ok) return resp
       } catch (_) { /* 断网/拒绝连接 → 落兜底 */ }
-      return shellFallback()
+      return shellFallback(req)
     })())
     return
   }
