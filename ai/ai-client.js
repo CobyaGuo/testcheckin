@@ -490,16 +490,24 @@
       return res.vectors;
     }
 
-    // 语义搜索：用已索引向量与 query 向量比对，返回 topK（相似度>=threshold）
+    // 语义搜索：用已索引向量与 query 向量比对，返回 topK（相似度>=threshold）。
+    // 可选 o.scope = { nbIds:Set } 或 { noteIds:Set }：在打分循环内过滤，
+    // topK 取「过滤后」的结果，绝不先取全局 topK 再裁掉（否则范围内会不足 topK）。
+    // 未传 scope 时行为与旧版完全一致，/auto 等调用方零影响。
     async function semanticSearch(query, o) {
       o = o || {};
       const topK = o.topK || 10;
       const threshold = (o.threshold != null) ? o.threshold : 0.5;
+      const sc = o.scope || null;
+      const nbIds = sc && sc.nbIds;
+      const noteIds = sc && sc.noteIds;
       const qv = (await embed([query]))[0];
       const all = await getAllEmbeddings();
       const scored = [];
       for (const e of all) {
         if (!e.vector) continue;
+        if (nbIds && !nbIds.has(e.nb_id)) continue;
+        if (noteIds && !noteIds.has(e.note_id)) continue;
         const s = util.cosine(qv, e.vector);
         if (s >= threshold) scored.push({ id: e.note_id, nb_id: e.nb_id, score: s });
       }
