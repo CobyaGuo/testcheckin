@@ -9,10 +9,28 @@
   "orientation": "any",
   "background_color": "#f8fafc",
   "theme_color": "#0f1115",
+  "share_target": {
+    "action": "./index.html?share",
+    "method": "GET",
+    "enctype": "application/x-www-form-urlencoded",
+    "params": { "title": "title", "text": "text", "url": "url" }
+  },
+  "file_handlers": [
+    {
+      "action": "./index.html",
+      "accept": { "text/markdown": [".md", ".markdown"], "text/plain": [".txt"] }
+    }
+  ],
+  "launch_handler": { "client_mode": "navigate-new" },
+  "shortcuts": [
+    { "name": "速记一条", "short_name": "速记", "url": "./index.html?action=quick" },
+    { "name": "今天的笔记", "short_name": "今天", "url": "./index.html?action=today" },
+    { "name": "最近搜索", "short_name": "搜索", "url": "./index.html?action=search" }
+  ],
   "icons": [
-    { "src": "./marknote-notes-192.20261117-002247-482.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
-    { "src": "./marknote-notes-512.20261117-002247-482.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
-    { "src": "./marknote-notes-maskable-512.20261117-002247-482.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" },
-    { "src": "./marknote-notes.20261117-002247-482.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+    { "src": "./marknote-notes-192.20261117-013825-798.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "./marknote-notes-512.20261117-013825-798.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "./marknote-notes-maskable-512.20261117-013825-798.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" },
+    { "src": "./marknote-notes.20261117-013825-798.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
   ]
 }
