@@ -155,6 +155,17 @@
     return out;
   };
 
+  // 后端初始化决策（纯函数，worker 内以 toString 注入；单测直接调用）。
+  // 关键：auto 模式且 fp16 资产缺失时直接判 WASM 回退，worker 因此根本不进 WebGPU 探测分支，
+  // 避免部署环境缺 model_fp16.onnx 时每次启动都白跑 15 秒超时。
+  function backendFallbackPlan(mode, fp16Missing, hasGpu) {
+    if (mode === 'wasm') return { gpu: false, reason: '已选择仅 WASM', code: 'wasm-only' };
+    if (fp16Missing) return { gpu: false, reason: 'fp16 资产缺失，回退 WASM', code: 'fp16-missing' };
+    if (!hasGpu) return { gpu: false, reason: 'WebGPU 不可用：无 navigator.gpu', code: 'no-gpu' };
+    return { gpu: true, reason: '', code: '' };
+  }
+  util.backendFallbackPlan = backendFallbackPlan;
+
   /* ============================ 跨 tab 互斥锁 ============================ */
   function withLock(name, fn) {
     if (global.navigator && global.navigator.locks && global.navigator.locks.request) {
@@ -234,43 +245,48 @@
     '      T.env.backends.onnx.wasm = Object.assign({}, T.env.backends.onnx.wasm, { wasmPaths: msg.wasmPaths, proxy: false });',
     // 推理后端：自动模式先探 WebGPU（fp16，15s 超时），任何异常/超时都销毁会话回退 WASM/q8。
     // 仅 WASM 模式行为与旧版完全一致；fp16 与 q8 输出同维同池化，向量库不因后端切换重建。
+    // 主线程 selfCheck 已预检 fp16 资产：缺失时 msg.fp16Missing=true，plan.gpu=false，
+    // 整个 WebGPU 探测（含 requestAdapter / 15s pipeline 超时）被跳过，秒回退 WASM。
     '      var backendMode = msg.backendMode || "auto";',
     '      var fallbackReason = "";',
+    '      var fallbackCode = "";',
     '      var activeBackend = "wasm";',
     '      var gen = 0;',
     '      var withTimeout = function (p, ms) {',
     '        return Promise.race([p, new Promise(function (_, rej) { setTimeout(function () { rej(new Error("timeout")); }, ms); })]);',
     '      };',
     '      var extractor = null;',
-    '      if (backendMode === "auto") {',
-    '        var gpu = self.navigator && self.navigator.gpu;',
-    '        if (!gpu) fallbackReason = "WebGPU 不可用：无 navigator.gpu";',
-    '        else {',
-    '          try {',
-    '            var adapter = await gpu.requestAdapter();',
-    '            if (!adapter) fallbackReason = "WebGPU 不可用：无 adapter";',
-    '            else {',
-    '              var mine = ++gen;',
-    '              try {',
-    '                var w = await withTimeout(T.pipeline("feature-extraction", msg.modelUrl, { device: "webgpu", dtype: "fp16" }), 15000);',
-    '                if (mine !== gen) { try { w.dispose && w.dispose(); } catch (e2) {} }',
-    '                else { extractor = w; activeBackend = "webgpu"; }',
-    '              } catch (e2) {',
-    '                gen++;',
-    '                var em = String((e2 && e2.message) || e2);',
-    '                fallbackReason = em === "timeout" ? "WebGPU 初始化超时（15 秒）" : ("WebGPU 初始化失败：" + em);',
-    '              }',
+    '      var gpu = self.navigator && self.navigator.gpu;',
+    '      var plan = (' + backendFallbackPlan.toString() + ')(backendMode, !!msg.fp16Missing, !!gpu);',
+    '      fallbackReason = plan.reason;',
+    '      fallbackCode = plan.code;',
+    '      if (plan.gpu) {',
+    '        try {',
+    '          var adapter = await gpu.requestAdapter();',
+    '          if (!adapter) { fallbackReason = "WebGPU 不可用：无 adapter"; fallbackCode = "no-adapter"; }',
+    '          else {',
+    '            var mine = ++gen;',
+    '            try {',
+    '              var w = await withTimeout(T.pipeline("feature-extraction", msg.modelUrl, { device: "webgpu", dtype: "fp16" }), 15000);',
+    '              if (mine !== gen) { try { w.dispose && w.dispose(); } catch (e2) {} }',
+    '              else { extractor = w; activeBackend = "webgpu"; fallbackReason = ""; fallbackCode = ""; }',
+    '            } catch (e2) {',
+    '              gen++;',
+    '              var em = String((e2 && e2.message) || e2);',
+    '              fallbackReason = em === "timeout" ? "WebGPU 初始化超时（15 秒）" : ("WebGPU 初始化失败：" + em);',
+    '              fallbackCode = em === "timeout" ? "timeout" : "init-error";',
     '            }',
-    '          } catch (e3) {',
-    '            fallbackReason = "WebGPU 探测失败：" + String((e3 && e3.message) || e3);',
     '          }',
+    '        } catch (e3) {',
+    '          fallbackReason = "WebGPU 探测失败：" + String((e3 && e3.message) || e3);',
+    '          fallbackCode = "probe-error";',
     '        }',
-    '      } else fallbackReason = "已选择仅 WASM";',
+    '      }',
     '      if (!extractor) {',
     '        extractor = await T.pipeline("feature-extraction", msg.modelUrl, { device: "wasm", dtype: msg.dtype || "q8" });',
     '      }',
     '      self._ext = extractor;',
-    '      self.postMessage({ type: "ready", id: msg.id, backend: activeBackend, fallbackReason: activeBackend === "webgpu" ? "" : fallbackReason });',
+    '      self.postMessage({ type: "ready", id: msg.id, backend: activeBackend, fallbackReason: activeBackend === "webgpu" ? "" : fallbackReason, fallbackCode: activeBackend === "webgpu" ? "" : fallbackCode });',
     '    } catch (err) {',
     '      self.postMessage({ type: "error", id: msg.id, message: String((err && err.message) || err) });',
     '    }',
@@ -315,7 +331,7 @@
     // 推理后端：默认「自动」（WebGPU 优先）；仅 WASM 模式走完全等同旧版的行为。
     // 后端不进 ensureModelFingerprint 的指纹：切换不触发向量库重建。
     let backendMode = normalizeBackendMode(opts.backend || readBackendMode());
-    let backendInfo = { mode: backendMode, active: '', reason: backendMode === 'wasm' ? '已选择仅 WASM' : '' };
+    let backendInfo = { mode: backendMode, active: '', reason: backendMode === 'wasm' ? '已选择仅 WASM' : '', code: backendMode === 'wasm' ? 'wasm-only' : '' };
     const absBase = new URL(base, here).href;
     const transformersUrl = absBase + 'transformers.min.js';
     const wasmPaths = absBase + 'ort/';
@@ -343,6 +359,8 @@
       workerReady = true;
       attachWorkerHandlers(worker);
     }
+    // 单测注入点：mock IndexedDB，使 ready() 可在 Node 下验证 selfCheck → init 参数透传。
+    if (opts && opts._injectDB) db = opts._injectDB;
 
     function setState(s) { state = s; listeners.forEach((fn) => { try { fn(s); } catch (e) {} }); }
     function onState(fn) { listeners.add(fn); return () => listeners.delete(fn); }
@@ -389,7 +407,17 @@
         ];
         for (const f of files) {
           const r = await localFetch(absBase + f, { method: 'GET', cache: 'no-cache' });
-          if (!r.ok) return { ok: false, reason: 'missing:' + f };
+          if (!r.ok) return { ok: false, reason: 'missing:' + f, fp16Missing: false };
+        }
+        // auto 模式追加 fp16 预检（只 HEAD，不拉 48MB 权重）：缺失不判 unavailable（WASM/q8 仍可用），
+        // 仅标记让 init 跳过 WebGPU 探测和 15 秒超时，秒回退并上报原因。
+        let fp16Missing = false;
+        if (normalizeBackendMode(backendMode) === 'auto') {
+          const f16 = model + '/onnx/model_fp16.onnx';
+          try {
+            const r16 = await localFetch(absBase + f16, { method: 'HEAD', cache: 'no-cache' });
+            fp16Missing = !r16.ok;
+          } catch (e) { fp16Missing = true; }
         }
         const emb = (manifest.capabilities && manifest.capabilities.embedding) || {};
         dim = emb.dim || 0;
@@ -397,13 +425,13 @@
         const hash = manifest.hash;
         if (!hash || hash.indexOf('REPLACE') === 0) {
           // 模型已放置但未生成 hash：放行（文件已校验存在），提示用户跑 compute 脚本
-          return { ok: true, finalized: false };
+          return { ok: true, finalized: false, fp16Missing };
         }
         const okHash = await verifyHash(files);
-        if (!okHash) return { ok: false, reason: 'hash-mismatch' };
-        return { ok: true, finalized: true };
+        if (!okHash) return { ok: false, reason: 'hash-mismatch', fp16Missing };
+        return { ok: true, finalized: true, fp16Missing };
       } catch (e) {
-        return { ok: false, reason: 'fetch-failed:' + String(e && e.message || e) };
+        return { ok: false, reason: 'fetch-failed:' + String(e && e.message || e), fp16Missing: false };
       }
     }
 
@@ -475,7 +503,8 @@
           backendInfo = {
             mode: backendMode,
             active: m.backend === 'webgpu' ? 'webgpu' : 'wasm',
-            reason: m.fallbackReason || ''
+            reason: m.fallbackReason || '',
+            code: m.fallbackCode || ''
           };
         }
         if (!p) return;
@@ -502,7 +531,7 @@
             const blob = new Blob([WORKER_SRC], { type: 'text/javascript' });
             worker = new Worker(URL.createObjectURL(blob), { type: 'module' });
             attachWorkerHandlers(worker);
-            await postWorker('init', { transformersUrl, wasmPaths, modelUrl: modelId, modelBase, dtype, pooling, backendMode });
+            await postWorker('init', { transformersUrl, wasmPaths, modelUrl: modelId, modelBase, dtype, pooling, backendMode, fp16Missing: !!check.fp16Missing });
             workerReady = true;
           });
           setState('idle');
@@ -666,7 +695,7 @@
     async function setBackend(mode) {
       const v = writeBackendMode(mode);
       backendMode = v;
-      backendInfo = { mode: v, active: '', reason: v === 'wasm' ? '已选择仅 WASM' : '' };
+      backendInfo = { mode: v, active: '', reason: v === 'wasm' ? '已选择仅 WASM' : '', code: v === 'wasm' ? 'wasm-only' : '' };
       const wasReady = state === 'idle' || state === 'indexing';
       destroy();
       if (wasReady) await ready();

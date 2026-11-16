@@ -6,8 +6,8 @@
 //  · 静态资源（同域 GET）：缓存优先，命中即返；未命中试网络，网络也失败时再查缓存，
 //    最终兜底空响应（504），不让页面请求悬挂/白屏。
 //  · 数据层（IndexedDB/SQLite）本来就在本地，不归 SW 管。
-// 版本号由构建脚本注入（checkin-web-20261116-152747-449 占位 = 构建时间戳精确到毫秒，每次构建必不同）；
-// 图标文件名由构建注入版本号（["./icon.20261116-152747-449.svg","./icon-192.20261116-152747-449.png","./icon-512.20261116-152747-449.png","./maskable-512.20261116-152747-449.png"] 占位），不同构建不同名，不做同名覆盖。
+// 版本号由构建脚本注入（checkin-web-20261116-194059-999 占位 = 构建时间戳精确到毫秒，每次构建必不同）；
+// 图标文件名由构建注入版本号（["./workbench/icon.20261116-194059-999.svg","./workbench/icon-192.20261116-194059-999.png","./workbench/icon-512.20261116-194059-999.png","./workbench/maskable-512.20261116-194059-999.png"] 占位），不同构建不同名，不做同名覆盖。
 // 旧缓存于 activate 阶段自动清理（按当前缓存名动态比对，不写死旧名）+ clients.claim 立即接管。
 // 更新策略（2026-11-04 改为全自动）：新 SW 装好缓存后立即 skipWaiting 激活 + claim 接管，
 // activate 清完旧缓存后广播 SW_UPDATED；页面侧据此弹「点击立即生效」（reload 属用户主动，
@@ -15,22 +15,29 @@
 // 旧设计「等用户确认才 skipWaiting」已废弃——提示一闪而过 / 用户不点 → 新 SW 永远 waiting、
 // 旧缓存永不清理，表现为「部署了新版本 PWA 却永远不更新」。
 //
-// 批次 139（独立工作台 auto.html 并入本 SW 预缓存）：浏览器同 scope 只允许一个 SW，
-// index.html（task 工作台）与 auto.html（自动化独立工作台）都在根路径 → 共用本根 SW，
+// 批次 139（独立工作台并入本 SW 预缓存）：浏览器同 scope 只允许一个 SW，
+// task 工作台与自动化独立工作台同源 → 共用本根 SW（v3.16 起四台壳分布在
+// 各自目录，SW 仍在根 scope），
 // 但两套壳与图标各自独立预缓存；缓存版本号 = checkin-web-<主版本>-auto-<auto版本>，
-// auto 分量（auto-20261116-152751-490 占位 + ["./auto-icon.20261116-152751-490.svg","./auto-icon-192.20261116-152751-490.png","./auto-icon-512.20261116-152751-490.png","./auto-maskable-512.20261116-152751-490.png"] 图标清单）由 vite.auto.config.js
+// auto 分量（auto-20261116-194103-960 占位 + ["./auto/auto-icon.20261116-194103-960.svg","./auto/auto-icon-192.20261116-194103-960.png","./auto/auto-icon-512.20261116-194103-960.png","./auto/auto-maskable-512.20261116-194103-960.png"] 图标清单）由 vite.auto.config.js
 // 独立注入 —— 两套版本号各自随构建必变，互不覆盖。auto.html 导航兜底回 auto 壳（绝不
 // 回退成主应用壳）。auto.html 页面侧注入的注册脚本负责注册与「已更新」提示。
-const CACHE = 'checkin-web-20261116-152747-449' + '-auto-' + 'auto-20261116-152751-490' + '-perf-' + 'perf-20261116-152754-977' + '-marknote-' + '20261116-152759-961'
+const CACHE = 'checkin-web-20261116-194059-999' + '-auto-' + 'auto-20261116-194103-960' + '-perf-' + 'perf-20261116-194107-457' + '-marknote-' + '20261116-194112-360'
 // 构建期注入：版本化图标文件名数组（JSON），随构建变化 → 每次发版预缓存的都是新文件
-const ICON_FILES = ["./icon.20261116-152747-449.svg","./icon-192.20261116-152747-449.png","./icon-512.20261116-152747-449.png","./maskable-512.20261116-152747-449.png"]
+const ICON_FILES = ["./workbench/icon.20261116-194059-999.svg","./workbench/icon-192.20261116-194059-999.png","./workbench/icon-512.20261116-194059-999.png","./workbench/maskable-512.20261116-194059-999.png"]
 // 独立工作台 auto.html 的版本化图标（vite.auto.config.js 注入）
-const AUTO_ICON_FILES = ["./auto-icon.20261116-152751-490.svg","./auto-icon-192.20261116-152751-490.png","./auto-icon-512.20261116-152751-490.png","./auto-maskable-512.20261116-152751-490.png"]
+const AUTO_ICON_FILES = ["./auto/auto-icon.20261116-194103-960.svg","./auto/auto-icon-192.20261116-194103-960.png","./auto/auto-icon-512.20261116-194103-960.png","./auto/auto-maskable-512.20261116-194103-960.png"]
 // 独立工作台 perf.html 的版本化图标（vite.perf.config.js 注入）
-const PERF_ICON_FILES = ["./perf-icon.20261116-152754-977.svg","./perf-icon-192.20261116-152754-977.png","./perf-icon-512.20261116-152754-977.png","./perf-maskable-512.20261116-152754-977.png"]
+const PERF_ICON_FILES = ["./perf/perf-icon.20261116-194107-457.svg","./perf/perf-icon-192.20261116-194107-457.png","./perf/perf-icon-512.20261116-194107-457.png","./perf/perf-maskable-512.20261116-194107-457.png"]
 // 独立工作台 marknote.html 的版本化图标（vite.marknote.config.js 注入）
-const MARKNOTE_ICON_FILES = ["./marknote-notes-192.20261116-152759-961.png","./marknote-notes-512.20261116-152759-961.png","./marknote-notes-maskable-512.20261116-152759-961.png"]
-const CORE_ASSETS = ['./', './index.html', './auto.html', './perf.html', './marknote.html', './manifest.webmanifest', './manifest-pc.webmanifest', './auto-manifest.webmanifest', './perf-manifest.webmanifest', './marknote-manifest.webmanifest']
+const MARKNOTE_ICON_FILES = ["./marknote/marknote-notes-192.20261116-194112-360.png","./marknote/marknote-notes-512.20261116-194112-360.png","./marknote/marknote-notes-maskable-512.20261116-194112-360.png","./marknote/marknote-notes.20261116-194112-360.svg"]
+// v3.16：manifest 与版本化图标已下沉到各自应用目录；v3.16.1 起根目录不再有应用壳 index.html，
+// 四台应用壳只在 dist/<app>/index.html。预缓存路径相对根 SW：
+// 壳走 ./<app>/index.html，manifest 走 ./<app>/<name>-manifest.webmanifest，
+// 图标清单由四台构建各自注入带目录前缀的路径（见 vite.*.config.js）。
+// v3.16.2：根路径新增纯静态应用导航页（pwa/portal.html → dist/index.html，仅跳板不属于
+// 任何 PWA scope），一并预缓存——离线打开 / 也能看到四台入口而非白屏兜底。
+const CORE_ASSETS = ['./index.html', './workbench/index.html', './auto/index.html', './perf/index.html', './marknote/index.html', './workbench/manifest.webmanifest', './workbench/manifest-pc.webmanifest', './auto/auto-manifest.webmanifest', './perf/perf-manifest.webmanifest', './marknote/marknote-manifest.webmanifest']
 const ASSETS = CORE_ASSETS.concat(ICON_FILES, AUTO_ICON_FILES, PERF_ICON_FILES, MARKNOTE_ICON_FILES)
 
 self.addEventListener('install', (e) => {
@@ -71,7 +78,7 @@ self.addEventListener('notificationclick', (e) => {
     if (target && 'focus' in target) {
       try { return await target.focus() } catch (_) { /* 聚焦失败落 openWindow */ }
     }
-    return self.clients.openWindow('./')
+    return self.clients.openWindow('./workbench/index.html')
   })())
 })
 
@@ -102,32 +109,41 @@ self.addEventListener('activate', (e) => {
 // 绝不互相回退、也不回退成主应用壳（四套应用彻底独立）。
 async function shellFallback(req) {
   const cache = await caches.open(CACHE)
-  const wantsMarknote = !!req && new URL(req.url).pathname.endsWith('/marknote.html')
+  const wantsMarknote = !!req && new URL(req.url).pathname.endsWith('/marknote/index.html')
   if (wantsMarknote) {
-    return (await cache.match('./marknote.html'))
+    return (await cache.match('./marknote/index.html'))
       || new Response(
         '<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>MarkNote · 个人笔记本</title><p style="font-family:system-ui;padding:2rem">正在同步资源，请联网后刷新重试。</p>',
         { status: 200, headers: { 'Content-Type': 'text/html; charset=utf-8' } }
       )
   }
-  const wantsPerf = !!req && new URL(req.url).pathname.endsWith('/perf.html')
+  const wantsPerf = !!req && new URL(req.url).pathname.endsWith('/perf/index.html')
   if (wantsPerf) {
-    return (await cache.match('./perf.html'))
+    return (await cache.match('./perf/index.html'))
       || new Response(
         '<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>性能测试观测台 · 独立工作台</title><p style="font-family:system-ui;padding:2rem">正在同步资源，请联网后刷新重试。</p>',
         { status: 200, headers: { 'Content-Type': 'text/html; charset=utf-8' } }
       )
   }
-  const wantsAuto = !!req && new URL(req.url).pathname.endsWith('/auto.html')
+  const wantsAuto = !!req && new URL(req.url).pathname.endsWith('/auto/index.html')
   if (wantsAuto) {
-    return (await cache.match('./auto.html'))
+    return (await cache.match('./auto/index.html'))
       || new Response(
         '<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>自动化测试分析 · 独立工作台</title><p style="font-family:system-ui;padding:2rem">正在同步资源，请联网后刷新重试。</p>',
         { status: 200, headers: { 'Content-Type': 'text/html; charset=utf-8' } }
       )
   }
-  return (await cache.match('./index.html'))
-    || (await cache.match('./'))
+  // v3.16.2：根路径导航（/ 或 /index.html）兜底到应用导航页，绝不回退成任何应用壳。
+  // 注意判定放在四台目录判断之后：/<app>/index.html 已在上面各自拦截，不会走到这里。
+  const wantsPortal = !!req && ['/', '/index.html'].includes(new URL(req.url).pathname)
+  if (wantsPortal) {
+    return (await cache.match('./index.html'))
+      || new Response(
+        '<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>应用导航 · C打卡工作台</title><p style="font-family:system-ui;padding:2rem">正在同步资源，请联网后刷新重试。</p>',
+        { status: 200, headers: { 'Content-Type': 'text/html; charset=utf-8' } }
+      )
+  }
+  return (await cache.match('./workbench/index.html'))
     || new Response(
       '<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>C打卡</title><p style="font-family:system-ui;padding:2rem">正在同步资源，请联网后刷新重试。</p>',
       { status: 200, headers: { 'Content-Type': 'text/html; charset=utf-8' } }
