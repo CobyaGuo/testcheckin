@@ -3,17 +3,17 @@
   "short_name": "MarkNote",
   "description": "Markdown 双模式笔记本：目录透明存储 / SQLite 数据库存储，左编辑右实时渲染",
   "lang": "zh-CN",
-  "id": "./",
-  "start_url": "./index.html",
-  "scope": "./",
+  "id": "/marknote/",
+  "start_url": "/marknote/index.html",
+  "scope": "/marknote/",
   "display": "standalone",
   "orientation": "any",
   "background_color": "#f8fafc",
   "theme_color": "#0f1115",
   "icons": [
-    { "src": "./marknote-notes-192.20261116-194112-360.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
-    { "src": "./marknote-notes-512.20261116-194112-360.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
-    { "src": "./marknote-notes-maskable-512.20261116-194112-360.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" },
-    { "src": "./marknote-notes.20261116-194112-360.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+    { "src": "./marknote-notes-192.20261116-202029-351.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "./marknote-notes-512.20261116-202029-351.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "./marknote-notes-maskable-512.20261116-202029-351.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" },
+    { "src": "./marknote-notes.20261116-202029-351.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
   ]
 }
