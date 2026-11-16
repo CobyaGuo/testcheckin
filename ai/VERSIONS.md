@@ -9,7 +9,8 @@
 | --- | --- | --- | --- |
 | transformers.js | 见 model-manifest.json | 本地 vendor | `ai/transformers.min.js` |
 | onnxruntime-web (ort) | 见 model-manifest.json | 本地 vendor | `ai/ort/` |
-| embedding 模型 | model-v1 | 本地权重 | `ai/model-v1/` |
+| embedding 模型（q8 / WASM） | model-v1 | `Xenova/bge-small-zh-v1.5` onnx quantized，约 22.9MB | `ai/model-v1/onnx/model_quantized.onnx` |
+| embedding 模型（fp16 / WebGPU） | model-v1 | 同仓库 fp16，约 45.3MB，`--fp16` 构建期一次性下载 | `ai/model-v1/onnx/model_fp16.onnx` |
 
 ## OCR（图片文字识别，MarkNote 专用）
 

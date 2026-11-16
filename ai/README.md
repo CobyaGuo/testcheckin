@@ -15,9 +15,10 @@ shared/ai/                       （build 时整体拷进 dist/ai/，四台产�
 │   └── *.mjs / *.min.mjs 等胶水
 ├── model-v1/                    # 默认 zh-en 中英双语轻量档（部署准备阶段由 fetch-model.mjs 取得）
 │   ├── config.json / tokenizer.json / tokenizer_config.json
-│   └── onnx/model_quantized.onnx
-├── model-manifest.json          # {version,hash,profile,lang,capabilities}；hash 不符→unavailable
-└── fetch-model.mjs              # 仅部署准备阶段联网：选择语言档位 / 下载 / 计算 hash
+│   └── onnx/model_quantized.onnx (q8/WASM) + model_fp16.onnx (fp16/WebGPU，--fp16 下载)
+├── model-manifest.json          # {version,hash,profile,lang,capabilities,backends}；hash 不符→unavailable
+├── embedBatch.js                # 三台共用的分块/后端常量（24/48/4000/15s、ai-infer-backend）
+└── fetch-model.mjs              # 仅部署准备阶段联网：选择语言档位 / 下载 q8 / --fp16 / 计算 hash
 ```
 
 ## 零外联怎么保证
@@ -122,7 +123,10 @@ node tests/e2e/suite/e2e-ai-offline.mjs        # 浏览器行为：零外联 + �
 
 ## 容量提示
 
-`ort/` 约 44MB（jsep + simd 双 wasm）；默认 `zh-en` 模型约 23MB，全语言档约 118MB。
+`ort/` 约 44MB（jsep + simd 双 wasm，jsep 是 WebGPU 载体，务必保留）；默认 `zh-en` 模型 q8 约 23MB、
+fp16（WebGPU 专用）约 45MB，全语言档约 118MB。fp16 与 q8 输出同维同池化，manifest 的 hash 基线
+只基于 q8；后端切换（localStorage `ai-infer-backend`）只重建 worker，不重建向量库。`client.embed()`
+入口强制分块（WASM 24 / WebGPU 48，块间让出事件循环），从根上防 WASM 堆耗尽 `bad_alloc`。
 SW 运行时缓存会缓存这些同域资源；若内网静态托管对 `Content-Type` 有要求，确保 `.wasm` 以
 `application/wasm` 提供（多线程 jsep 变体需要 `COOP: same-origin` + `COEP: require-corp` 才能用
 SharedArrayBuffer；不发送这两个头时自动回退到单线程 simd wasm，功能不受影响，仅稍慢）。

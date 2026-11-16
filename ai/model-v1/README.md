@@ -6,7 +6,8 @@
 - `config.json`
 - `tokenizer.json`
 - `tokenizer_config.json`
-- `onnx/model_quantized.onnx`（q8 量化，约 23MB）
+- `onnx/model_quantized.onnx`（q8 量化，约 23MB，WASM 后端）
+- `onnx/model_fp16.onnx`（fp16，约 45MB，WebGPU 后端；由 `--fp16` 单独下载，不进 hash 基线）
 
 当前档位：**zh-en 中英双语轻量档**，`Xenova/bge-small-zh-v1.5`，dim=512，pooling=cls，
 词表 2.1 万（bert-base-chinese）。中文语义检索准确，英文术语由子词 + 关键词匹配兜底。

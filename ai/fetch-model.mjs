@@ -8,6 +8,7 @@
  *   node shared/ai/fetch-model.mjs --lang multilingual# 全语言档（~118MB）
  *   node shared/ai/fetch-model.mjs --lang en           # 纯英文档（~23MB）
  *   node shared/ai/fetch-model.mjs --base https://hf-mirror.com   # 指定下载源
+ *   node shared/ai/fetch-model.mjs --fp16             # 仅下载 WebGPU 用 fp16 档到 onnx/model_fp16.onnx
  *   node shared/ai/fetch-model.mjs --compute-hash     # 仅重算 manifest.hash（不联网、不改档位）
  *
  * 高级覆盖（自定义模型仓库）：
@@ -20,10 +21,12 @@
  *   model-v1/config.json
  *   model-v1/tokenizer.json
  *   model-v1/tokenizer_config.json
- *   model-v1/onnx/model_quantized.onnx   （q8 量化）
+ *   model-v1/onnx/model_quantized.onnx   （q8 量化，WASM 后端）
+ *   model-v1/onnx/model_fp16.onnx        （fp16，WebGPU 后端；--fp16 单独下载，~48MB）
  *
  * 换档后 manifest.version / dim / pooling 会变，客户端检测到指纹变化会自动清空并重建向量库，
  * 无需手动干预；两个平台（marknote-ai / workbench-ai）各自独立重建。
+ * fp16 与 q8 输出同维同池化（dim/pooling/hash 不变），后端切换绝不触发向量库重建。
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -76,6 +79,7 @@ const argVal = (k) => {
 };
 const computeOnly = args.includes('--compute-hash');
 const listOnly = args.includes('--list');
+const fp16Only = args.includes('--fp16');
 const langKey = argVal('lang') || argVal('profile') || 'zh-en';
 const baseArg = argVal('base');
 const BASES = baseArg
@@ -87,6 +91,7 @@ const FILES = [
   'tokenizer_config.json',
   'onnx/model_quantized.onnx'
 ];
+const FP16_FILE = 'onnx/model_fp16.onnx';
 
 function resolveProfile() {
   const base = PROFILES[langKey];
@@ -186,6 +191,34 @@ function writeProfile(p) {
   console.log(`✓ 档位 ${p.key} → manifest（dim=${p.dim}, pooling=${p.pooling}, lang=${p.lang}）`);
 }
 
+// WebGPU 载体：单独下载同仓库 fp16 档（不参与 hash 基线计算）。
+// 运行时零外联不变：文件一旦落进 ./ai/，仍由同源断言 + worker fetch guard 加载。
+async function downloadFp16(p) {
+  const base = await pickBase(p.repo);
+  const dest = path.join(TARGET, FP16_FILE);
+  fs.mkdirSync(path.dirname(dest), { recursive: true });
+  process.stdout.write(`↓ ${FP16_FILE} ... `);
+  try {
+    const buf = await fetchBuf(`${base}/${p.repo}/resolve/main/${FP16_FILE}`);
+    if (!buf.length) throw new Error('空文件');
+    fs.writeFileSync(dest, buf);
+    console.log(` ${(buf.length / 1048576).toFixed(1)} MB`);
+    return buf.length;
+  } catch (e) {
+    console.error(`\n✗ ${FP16_FILE} 下载失败：${e.message}`);
+    process.exit(1);
+  }
+}
+
+// 后端描述字段：只加声明，不动 hash / dim / pooling —— 后端切换不重建向量库。
+function writeBackends() {
+  const m = fs.existsSync(MANIFEST) ? JSON.parse(fs.readFileSync(MANIFEST, 'utf8')) : {};
+  m.backends = { webgpu: 'fp16', wasm: 'q8' };
+  m.backendNote = '自动模式优先 WebGPU + fp16，15 秒超时或任何异常回退 WASM + q8；两档输出同维同池化，切换后端不重建向量库。';
+  fs.writeFileSync(MANIFEST, JSON.stringify(m, null, 2) + '\n');
+  console.log('✓ manifest 已写入 backends = { webgpu: fp16, wasm: q8 }（hash 基线未动）');
+}
+
 function concat(a, b) { return Buffer.concat([a, b]); }
 
 async function computeHash() {
@@ -214,6 +247,13 @@ async function computeHash() {
   if (listOnly) { printProfiles(); return; }
   if (computeOnly) { await computeHash(); return; }
   const p = resolveProfile();
+  if (fp16Only) {
+    console.log(`▸ WebGPU fp16 档（仅下载权重，${p.repo}）`);
+    const bytes = await downloadFp16(p);
+    writeBackends();
+    console.log(`✓ fp16 资产就位：${FP16_FILE}（${(bytes / 1048576).toFixed(1)} MB）`);
+    return;
+  }
   console.log(`▸ 语言档位：${p.key}（${p.lang}，${p.size}）· ${p.repo}`);
   await download(p);
   writeProfile(p);

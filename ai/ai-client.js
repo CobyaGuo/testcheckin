@@ -38,6 +38,24 @@
     'manifestUrl', 'versionUrl', 'remoteBase', 'cdnBase'
   ];
 
+  /* ==================== 推理后端 / 分块常量（与 embedBatch.js 同源） ==================== */
+  // 与 shared/ai/embedBatch.js 的数值必须一致（check:ai 静态比对）；classic script 不进打包器，
+  // 无法 import ESM，故在此保留镜像。只影响单次前向批量，不进模型指纹（后端切换不清向量库）。
+  const BACKEND_KEY = 'ai-infer-backend';
+  const EMBED_BATCH = 24;            // 单次前向批量上限，防 WASM 堆耗尽
+  const EMBED_BATCH_WEBGPU = 48;     // WebGPU（fp16）内存压力小，可放宽
+  const WEBGPU_TIMEOUT_MS = 15000;   // WebGPU 初始化超时，超时即回退 WASM/q8
+  function normalizeBackendMode(mode) { return mode === 'wasm' ? 'wasm' : 'auto'; }
+  function readBackendMode() {
+    try { return normalizeBackendMode(global.localStorage && global.localStorage.getItem(BACKEND_KEY)); }
+    catch (e) { return 'auto'; }
+  }
+  function writeBackendMode(mode) {
+    const v = normalizeBackendMode(mode);
+    try { if (global.localStorage) global.localStorage.setItem(BACKEND_KEY, v); } catch (e) {}
+    return v;
+  }
+
   /* ============================ 纯函数工具（可单测） ============================ */
   const util = {};
 
@@ -118,6 +136,25 @@
     return selected;
   };
 
+  // 分块前向：无论调用方一次传多少条，都按 batchSize 切片逐块走 worker，
+  // 块间让出事件循环（await setTimeout(0)），结果按原顺序拼接。签名/返回值对调用方透明。
+  //   runChunk(chunk) => Promise<vector[]>，见 embed()（等价于一次 worker embed 调用）。
+  util.embedChunked = async function (texts, batchSize, runChunk) {
+    const arr = Array.isArray(texts) ? texts : [texts];
+    const size = Math.max(1, Math.floor(batchSize) || EMBED_BATCH);
+    const out = new Array(arr.length);
+    for (let i = 0; i < arr.length; i += size) {
+      const chunk = arr.slice(i, i + size);
+      const vecs = await runChunk(chunk);
+      if (!vecs || vecs.length !== chunk.length) {
+        throw new Error('[local-ai] embed 分块返回长度不匹配：期望 ' + chunk.length + '，实际 ' + (vecs ? vecs.length : 0));
+      }
+      for (let j = 0; j < chunk.length; j++) out[i + j] = vecs[j];
+      if (i + size < arr.length) await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+    return out;
+  };
+
   /* ============================ 跨 tab 互斥锁 ============================ */
   function withLock(name, fn) {
     if (global.navigator && global.navigator.locks && global.navigator.locks.request) {
@@ -195,9 +232,45 @@
     '      T.env.backends = T.env.backends || {};',
     '      T.env.backends.onnx = T.env.backends.onnx || {};',
     '      T.env.backends.onnx.wasm = Object.assign({}, T.env.backends.onnx.wasm, { wasmPaths: msg.wasmPaths, proxy: false });',
-    '      var extractor = await T.pipeline("feature-extraction", msg.modelUrl, { device: "wasm", dtype: msg.dtype || "q8" });',
+    // 推理后端：自动模式先探 WebGPU（fp16，15s 超时），任何异常/超时都销毁会话回退 WASM/q8。
+    // 仅 WASM 模式行为与旧版完全一致；fp16 与 q8 输出同维同池化，向量库不因后端切换重建。
+    '      var backendMode = msg.backendMode || "auto";',
+    '      var fallbackReason = "";',
+    '      var activeBackend = "wasm";',
+    '      var gen = 0;',
+    '      var withTimeout = function (p, ms) {',
+    '        return Promise.race([p, new Promise(function (_, rej) { setTimeout(function () { rej(new Error("timeout")); }, ms); })]);',
+    '      };',
+    '      var extractor = null;',
+    '      if (backendMode === "auto") {',
+    '        var gpu = self.navigator && self.navigator.gpu;',
+    '        if (!gpu) fallbackReason = "WebGPU 不可用：无 navigator.gpu";',
+    '        else {',
+    '          try {',
+    '            var adapter = await gpu.requestAdapter();',
+    '            if (!adapter) fallbackReason = "WebGPU 不可用：无 adapter";',
+    '            else {',
+    '              var mine = ++gen;',
+    '              try {',
+    '                var w = await withTimeout(T.pipeline("feature-extraction", msg.modelUrl, { device: "webgpu", dtype: "fp16" }), 15000);',
+    '                if (mine !== gen) { try { w.dispose && w.dispose(); } catch (e2) {} }',
+    '                else { extractor = w; activeBackend = "webgpu"; }',
+    '              } catch (e2) {',
+    '                gen++;',
+    '                var em = String((e2 && e2.message) || e2);',
+    '                fallbackReason = em === "timeout" ? "WebGPU 初始化超时（15 秒）" : ("WebGPU 初始化失败：" + em);',
+    '              }',
+    '            }',
+    '          } catch (e3) {',
+    '            fallbackReason = "WebGPU 探测失败：" + String((e3 && e3.message) || e3);',
+    '          }',
+    '        }',
+    '      } else fallbackReason = "已选择仅 WASM";',
+    '      if (!extractor) {',
+    '        extractor = await T.pipeline("feature-extraction", msg.modelUrl, { device: "wasm", dtype: msg.dtype || "q8" });',
+    '      }',
     '      self._ext = extractor;',
-    '      self.postMessage({ type: "ready", id: msg.id });',
+    '      self.postMessage({ type: "ready", id: msg.id, backend: activeBackend, fallbackReason: activeBackend === "webgpu" ? "" : fallbackReason });',
     '    } catch (err) {',
     '      self.postMessage({ type: "error", id: msg.id, message: String((err && err.message) || err) });',
     '    }',
@@ -239,6 +312,10 @@
     const dbNamespace = opts.dbNamespace || 'marknote';
     const model = opts.model || 'model-v1';
     const dtype = opts.dtype || 'q8';
+    // 推理后端：默认「自动」（WebGPU 优先）；仅 WASM 模式走完全等同旧版的行为。
+    // 后端不进 ensureModelFingerprint 的指纹：切换不触发向量库重建。
+    let backendMode = normalizeBackendMode(opts.backend || readBackendMode());
+    let backendInfo = { mode: backendMode, active: '', reason: backendMode === 'wasm' ? '已选择仅 WASM' : '' };
     const absBase = new URL(base, here).href;
     const transformersUrl = absBase + 'transformers.min.js';
     const wasmPaths = absBase + 'ort/';
@@ -260,6 +337,12 @@
     let reqSeq = 0;
     const pending = new Map();
     const listeners = new Set();
+    // 单测注入点：直接挂 mock worker，跳过资产自检（生产路径从不传此参数）。
+    if (opts && opts._injectWorker) {
+      worker = opts._injectWorker;
+      workerReady = true;
+      attachWorkerHandlers(worker);
+    }
 
     function setState(s) { state = s; listeners.forEach((fn) => { try { fn(s); } catch (e) {} }); }
     function onState(fn) { listeners.add(fn); return () => listeners.delete(fn); }
@@ -376,6 +459,36 @@
       });
     }
 
+    // worker 消息/错误处理器：真实 worker 与单测注入的 mock worker 共用一套
+    function attachWorkerHandlers(w) {
+      w.onmessage = (e) => {
+        const m = e.data;
+        // init 失败消息也必须能 reject，否则 ready() 永久挂起
+        if (m.type === 'error' && m.id == null) {
+          pending.forEach((p) => p.reject(new Error(m.message || 'worker error')));
+          pending.clear();
+          return;
+        }
+        const p = pending.get(m.id);
+        if (m.type === 'ready') {
+          workerReady = true;
+          backendInfo = {
+            mode: backendMode,
+            active: m.backend === 'webgpu' ? 'webgpu' : 'wasm',
+            reason: m.fallbackReason || ''
+          };
+        }
+        if (!p) return;
+        pending.delete(m.id);
+        if (m.type === 'error' || m.error) p.reject(new Error(m.message || m.error));
+        else p.resolve(m);
+      };
+      w.onerror = (e) => {
+        pending.forEach((p) => p.reject(new Error('worker error: ' + (e.message || e.filename))));
+        pending.clear();
+      };
+    }
+
     // 加载 worker + 模型（跨 tab 互斥），失败→unavailable
     function ready() {
       if (readyPromise) return readyPromise;
@@ -388,26 +501,8 @@
             if (workerReady) return;
             const blob = new Blob([WORKER_SRC], { type: 'text/javascript' });
             worker = new Worker(URL.createObjectURL(blob), { type: 'module' });
-            worker.onmessage = (e) => {
-              const m = e.data;
-              // init 失败消息也必须能 reject，否则 ready() 永久挂起
-              if (m.type === 'error' && m.id == null) {
-                pending.forEach((p) => p.reject(new Error(m.message || 'worker error')));
-                pending.clear();
-                return;
-              }
-              const p = pending.get(m.id);
-              if (m.type === 'ready') workerReady = true;
-              if (!p) return;
-              pending.delete(m.id);
-              if (m.type === 'error' || m.error) p.reject(new Error(m.message || m.error));
-              else p.resolve(m);
-            };
-            worker.onerror = (e) => {
-              pending.forEach((p) => p.reject(new Error('worker error: ' + (e.message || e.filename))));
-              pending.clear();
-            };
-            await postWorker('init', { transformersUrl, wasmPaths, modelUrl: modelId, modelBase, dtype, pooling });
+            attachWorkerHandlers(worker);
+            await postWorker('init', { transformersUrl, wasmPaths, modelUrl: modelId, modelBase, dtype, pooling, backendMode });
             workerReady = true;
           });
           setState('idle');
@@ -482,12 +577,17 @@
     }
 
     // 批量文本 → 向量（已 ready 后调用）
+    // 根治 bad_alloc：入口内部强制分块——超过 24 条按 24 切片（WebGPU 放宽到 48），
+    // 块间 await setTimeout(0) 让出事件循环与 WASM 堆，结果按原顺序拼回，调用方零感知。
     async function embed(texts) {
       if (!Array.isArray(texts)) texts = [texts];
       if (!texts.length) return [];
-      const res = await postWorker('embed', { texts });
-      if (res.error) throw new Error(res.error);
-      return res.vectors;
+      const size = backendInfo.active === 'webgpu' ? EMBED_BATCH_WEBGPU : EMBED_BATCH;
+      return util.embedChunked(texts, size, async (chunk) => {
+        const res = await postWorker('embed', { texts: chunk });
+        if (res.error) throw new Error(res.error);
+        return res.vectors;
+      });
     }
 
     // 语义搜索：用已索引向量与 query 向量比对，返回 topK（相似度>=threshold）。
@@ -561,9 +661,22 @@
       workerReady = false; readyPromise = null;
     }
 
+    // 推理后端切换：只销毁/重建 worker 会话，向量库（IndexedDB）完全不动。
+    // 此前已就绪 → 立即按新后端重建；否则只落偏好，下次 ready()/开启 AI 时生效。
+    async function setBackend(mode) {
+      const v = writeBackendMode(mode);
+      backendMode = v;
+      backendInfo = { mode: v, active: '', reason: v === 'wasm' ? '已选择仅 WASM' : '' };
+      const wasReady = state === 'idle' || state === 'indexing';
+      destroy();
+      if (wasReady) await ready();
+      return { ok: state !== 'unavailable', info: Object.assign({}, backendInfo) };
+    }
+    function backend() { return Object.assign({}, backendInfo); }
+
     return {
       base, dbNamespace, model, dbName,
-      ready, status, onState, disable, destroy,
+      ready, status, onState, disable, destroy, setBackend, backend,
       lastError: () => lastError,
       selfCheck,
       embed, semanticSearch, related, summarize,
@@ -574,7 +687,12 @@
 
   // policy 冻结后暴露给页面与回归脚本：e2e / check:ai 直接读取断言，
   // 任何人把 autoUpdate / updateCheck / publicCdn 改成 true 都会导致验收失败。
-  const API = { createAIClient, util, policy: AI_POLICY };
+  const API = {
+    createAIClient, util, policy: AI_POLICY,
+    // 供三台设置卡与单测读取；与 embedBatch.js 同源（check:ai 会静态核对数值）。
+    constants: Object.freeze({ EMBED_BATCH, EMBED_BATCH_WEBGPU, MAX_EMBED_TEXT_CHARS: 4000, WEBGPU_TIMEOUT_MS }),
+    backend: Object.freeze({ key: BACKEND_KEY, read: readBackendMode, write: writeBackendMode })
+  };
   global.MN_AI = API;
   if (typeof module !== 'undefined' && module.exports) module.exports = API;
 })(typeof window !== 'undefined' ? window : (typeof globalThis !== 'undefined' ? globalThis : this));
