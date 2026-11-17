@@ -6,8 +6,8 @@
 //  · 静态资源（同域 GET）：缓存优先，命中即返；未命中试网络，网络也失败时再查缓存，
 //    最终兜底空响应（504），不让页面请求悬挂/白屏。
 //  · 数据层（IndexedDB/SQLite）本来就在本地，不归 SW 管。
-// 版本号由构建脚本注入（checkin-web-20261117-144218-784 占位 = 构建时间戳精确到毫秒，每次构建必不同）；
-// 图标文件名由构建注入版本号（["./workbench/icon.20261117-144218-784.svg","./workbench/icon-192.20261117-144218-784.png","./workbench/icon-512.20261117-144218-784.png","./workbench/maskable-512.20261117-144218-784.png"] 占位），不同构建不同名，不做同名覆盖。
+// 版本号由构建脚本注入（checkin-web-20261117-161212-867 占位 = 构建时间戳精确到毫秒，每次构建必不同）；
+// 图标文件名由构建注入版本号（["./workbench/icon.20261117-161212-867.svg","./workbench/icon-192.20261117-161212-867.png","./workbench/icon-512.20261117-161212-867.png","./workbench/maskable-512.20261117-161212-867.png"] 占位），不同构建不同名，不做同名覆盖。
 // 旧缓存于 activate 阶段自动清理（按当前缓存名动态比对，不写死旧名）+ clients.claim 立即接管。
 // 更新策略（2026-11-04 改为全自动）：新 SW 装好缓存后立即 skipWaiting 激活 + claim 接管，
 // activate 清完旧缓存后广播 SW_UPDATED；页面侧据此弹「点击立即生效」（reload 属用户主动，
@@ -19,18 +19,18 @@
 // task 工作台与自动化独立工作台同源 → 共用本根 SW（v3.16 起四台壳分布在
 // 各自目录，SW 仍在根 scope），
 // 但两套壳与图标各自独立预缓存；缓存版本号 = checkin-web-<主版本>-auto-<auto版本>，
-// auto 分量（auto-20261117-144222-846 占位 + ["./auto/auto-icon.20261117-144222-846.svg","./auto/auto-icon-192.20261117-144222-846.png","./auto/auto-icon-512.20261117-144222-846.png","./auto/auto-maskable-512.20261117-144222-846.png"] 图标清单）由 vite.auto.config.js
+// auto 分量（auto-20261117-161216-686 占位 + ["./auto/auto-icon.20261117-161216-686.svg","./auto/auto-icon-192.20261117-161216-686.png","./auto/auto-icon-512.20261117-161216-686.png","./auto/auto-maskable-512.20261117-161216-686.png"] 图标清单）由 vite.auto.config.js
 // 独立注入 —— 两套版本号各自随构建必变，互不覆盖。auto.html 导航兜底回 auto 壳（绝不
 // 回退成主应用壳）。auto.html 页面侧注入的注册脚本负责注册与「已更新」提示。
-const CACHE = 'checkin-web-20261117-144218-784' + '-auto-' + 'auto-20261117-144222-846' + '-perf-' + 'perf-20261117-144225-991' + '-marknote-' + '20261117-144231-195'
+const CACHE = 'checkin-web-20261117-161212-867' + '-auto-' + 'auto-20261117-161216-686' + '-perf-' + 'perf-20261117-161219-844' + '-marknote-' + '20261117-161224-868'
 // 构建期注入：版本化图标文件名数组（JSON），随构建变化 → 每次发版预缓存的都是新文件
-const ICON_FILES = ["./workbench/icon.20261117-144218-784.svg","./workbench/icon-192.20261117-144218-784.png","./workbench/icon-512.20261117-144218-784.png","./workbench/maskable-512.20261117-144218-784.png"]
+const ICON_FILES = ["./workbench/icon.20261117-161212-867.svg","./workbench/icon-192.20261117-161212-867.png","./workbench/icon-512.20261117-161212-867.png","./workbench/maskable-512.20261117-161212-867.png"]
 // 独立工作台 auto.html 的版本化图标（vite.auto.config.js 注入）
-const AUTO_ICON_FILES = ["./auto/auto-icon.20261117-144222-846.svg","./auto/auto-icon-192.20261117-144222-846.png","./auto/auto-icon-512.20261117-144222-846.png","./auto/auto-maskable-512.20261117-144222-846.png"]
+const AUTO_ICON_FILES = ["./auto/auto-icon.20261117-161216-686.svg","./auto/auto-icon-192.20261117-161216-686.png","./auto/auto-icon-512.20261117-161216-686.png","./auto/auto-maskable-512.20261117-161216-686.png"]
 // 独立工作台 perf.html 的版本化图标（vite.perf.config.js 注入）
-const PERF_ICON_FILES = ["./perf/perf-icon.20261117-144225-991.svg","./perf/perf-icon-192.20261117-144225-991.png","./perf/perf-icon-512.20261117-144225-991.png","./perf/perf-maskable-512.20261117-144225-991.png"]
+const PERF_ICON_FILES = ["./perf/perf-icon.20261117-161219-844.svg","./perf/perf-icon-192.20261117-161219-844.png","./perf/perf-icon-512.20261117-161219-844.png","./perf/perf-maskable-512.20261117-161219-844.png"]
 // 独立工作台 marknote.html 的版本化图标（vite.marknote.config.js 注入）
-const MARKNOTE_ICON_FILES = ["./marknote/marknote-notes-192.20261117-144231-195.png","./marknote/marknote-notes-512.20261117-144231-195.png","./marknote/marknote-notes-maskable-512.20261117-144231-195.png","./marknote/marknote-notes.20261117-144231-195.svg"]
+const MARKNOTE_ICON_FILES = ["./marknote/marknote-notes-192.20261117-161224-868.png","./marknote/marknote-notes-512.20261117-161224-868.png","./marknote/marknote-notes-maskable-512.20261117-161224-868.png","./marknote/marknote-notes.20261117-161224-868.svg"]
 // v3.16：manifest 与版本化图标已下沉到各自应用目录；v3.16.1 起根目录不再有应用壳 index.html，
 // 四台应用壳只在 dist/<app>/index.html。预缓存路径相对根 SW：
 // 壳走 ./<app>/index.html，manifest 走 ./<app>/<name>-manifest.webmanifest，
