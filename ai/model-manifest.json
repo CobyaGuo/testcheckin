@@ -1,0 +1,27 @@
+{
+  "version": "v1-zh-en",
+  "hash": "fd0434bfd809742da69c56c8520b06a4bf30811f3321bb99869984f168c31c84",
+  "model": "bge-small-zh-v1.5",
+  "capabilities": {
+    "embedding": {
+      "dim": 512,
+      "lang": "zh,en",
+      "pooling": "cls"
+    },
+    "summarize": {
+      "mode": "extractive"
+    },
+    "related": {
+      "threshold": 0.6
+    }
+  },
+  "note": "hash 为本地模型文件指纹（配置三件套全量 + onnx 首尾各 256KB 的 SHA-256）。换档位后 version/dim/pooling 变化，客户端自动清空并重建向量库；不一致时判定不可用，绝不降级到外部源。",
+  "profile": "zh-en",
+  "repo": "Xenova/bge-small-zh-v1.5",
+  "lang": "zh,en",
+  "backends": {
+    "webgpu": "fp16",
+    "wasm": "q8"
+  },
+  "backendNote": "自动模式优先 WebGPU + fp16，15 秒超时或任何异常回退 WASM + q8；两档输出同维同池化，切换后端不重建向量库。"
+}

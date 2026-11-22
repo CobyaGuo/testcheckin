@@ -1,0 +1,249 @@
+// checkin-web Service Worker：让单文件应用可安装 + 离线可用
+// 策略：
+//  · 壳（HTML）：导航请求网络优先，但响应必须「健康」（收到且 2xx）才采用；
+//    连不上（断网/拒绝连接）或返回失败响应（服务挂了 → 404/502/空体）一律兜底缓存里的 index.html
+//    → 服务在不在、网在不在，壳都能打开，任何情况下不白屏。
+//  · 静态资源（同域 GET）：缓存优先，命中即返；未命中试网络，网络也失败时再查缓存，
+//    最终兜底空响应（504），不让页面请求悬挂/白屏。
+//  · Range 请求（媒体/大文件分片）直通网络：Cache API 只接受完整 200 响应，
+//    把 206 局部响应写进 cache.put 会抛 TypeError 并打断请求；缓存命中也没有
+//    Content-Range 语义，不能拿来答分片请求。
+//  · 数据层（IndexedDB/SQLite）本来就在本地，不归 SW 管。
+// 版本号由构建脚本注入（checkin-web-20261122-235112-537 占位 = 构建时间戳精确到毫秒，每次构建必不同）；
+// 图标文件名由构建注入版本号（["./workbench/icon.20261122-235112-537.svg","./workbench/icon-192.20261122-235112-537.png","./workbench/icon-512.20261122-235112-537.png","./workbench/maskable-512.20261122-235112-537.png"] 占位），不同构建不同名，不做同名覆盖。
+// 旧缓存于 activate 阶段自动清理（按当前缓存名动态比对，不写死旧名）+ clients.claim 立即接管。
+// 更新策略（2026-11-04 改为全自动）：新 SW 装好缓存后立即 skipWaiting 激活 + claim 接管，
+// activate 清完旧缓存后广播 SW_UPDATED；页面侧据此弹「点击立即生效」（reload 属用户主动，
+// 不会打断使用中的页面）。不点也不丢：导航网络优先（no-cache），下次打开必然拿到新版 HTML。
+// 旧设计「等用户确认才 skipWaiting」已废弃——提示一闪而过 / 用户不点 → 新 SW 永远 waiting、
+// 旧缓存永不清理，表现为「部署了新版本 PWA 却永远不更新」。
+//
+// 批次 139（独立工作台并入本 SW 预缓存）：浏览器同 scope 只允许一个 SW，
+// task 工作台与自动化独立工作台同源 → 共用本根 SW（v3.16 起四台壳分布在
+// 各自目录，SW 仍在根 scope），
+// 但两套壳与图标各自独立预缓存；缓存版本号 = checkin-web-<主版本>-auto-<auto版本>，
+// auto 分量（auto-20261122-235115-929 占位 + ["./auto/auto-icon.20261122-235115-929.svg","./auto/auto-icon-192.20261122-235115-929.png","./auto/auto-icon-512.20261122-235115-929.png","./auto/auto-maskable-512.20261122-235115-929.png"] 图标清单）由 vite.auto.config.js
+// 独立注入 —— 两套版本号各自随构建必变，互不覆盖。auto.html 导航兜底回 auto 壳（绝不
+// 回退成主应用壳）。auto.html 页面侧注入的注册脚本负责注册与「已更新」提示。
+const CACHE = 'checkin-web-20261122-235112-537' + '-auto-' + 'auto-20261122-235115-929' + '-perf-' + 'perf-20261122-235118-627' + '-marknote-' + '20261122-235123-558'
+// 构建期注入：版本化图标文件名数组（JSON），随构建变化 → 每次发版预缓存的都是新文件
+const ICON_FILES = ["./workbench/icon.20261122-235112-537.svg","./workbench/icon-192.20261122-235112-537.png","./workbench/icon-512.20261122-235112-537.png","./workbench/maskable-512.20261122-235112-537.png"]
+// 独立工作台 auto.html 的版本化图标（vite.auto.config.js 注入）
+const AUTO_ICON_FILES = ["./auto/auto-icon.20261122-235115-929.svg","./auto/auto-icon-192.20261122-235115-929.png","./auto/auto-icon-512.20261122-235115-929.png","./auto/auto-maskable-512.20261122-235115-929.png"]
+// 独立工作台 perf.html 的版本化图标（vite.perf.config.js 注入）
+const PERF_ICON_FILES = ["./perf/perf-icon.20261122-235118-627.svg","./perf/perf-icon-192.20261122-235118-627.png","./perf/perf-icon-512.20261122-235118-627.png","./perf/perf-maskable-512.20261122-235118-627.png"]
+// 独立工作台 marknote.html 的版本化图标（vite.marknote.config.js 注入）
+const MARKNOTE_ICON_FILES = ["./marknote/marknote-notes-192.20261122-235123-558.png","./marknote/marknote-notes-512.20261122-235123-558.png","./marknote/marknote-notes-maskable-512.20261122-235123-558.png","./marknote/marknote-notes.20261122-235123-558.svg"]
+// v3.16：manifest 与版本化图标已下沉到各自应用目录；v3.16.1 起根目录不再有应用壳 index.html，
+// 四台应用壳只在 dist/<app>/index.html。预缓存路径相对根 SW：
+// 壳走 ./<app>/index.html，manifest 走 ./<app>/<name>-manifest.webmanifest，
+// 图标清单由四台构建各自注入带目录前缀的路径（见 vite.*.config.js）。
+// v3.16.2：根路径新增纯静态应用导航页（pwa/portal.html → dist/index.html，仅跳板不属于
+// 任何 PWA scope），一并预缓存——离线打开 / 也能看到四台入口而非白屏兜底。
+const CORE_ASSETS = ['./index.html', './workbench/index.html', './auto/index.html', './perf/index.html', './marknote/index.html', './workbench/manifest.webmanifest', './workbench/manifest-pc.webmanifest', './auto/auto-manifest.webmanifest', './perf/perf-manifest.webmanifest', './marknote/marknote-manifest.webmanifest']
+const ASSETS = CORE_ASSETS.concat(ICON_FILES, AUTO_ICON_FILES, PERF_ICON_FILES, MARKNOTE_ICON_FILES)
+
+self.addEventListener('install', (e) => {
+  e.waitUntil((async () => {
+    const cache = await caches.open(CACHE)
+    // 核心壳（导航、HTML、manifest，含 auto 壳）必须成功，否则离线无兜底 —— 失败则安装失败（可接受，说明服务本身不可达）。
+    // 预缓存同样 no-cache：HTTP/CDN 缓存的旧 HTML 不许进新版本缓存（否则离线兜底的是旧壳）。
+    await cache.addAll(CORE_ASSETS.map((u) => new Request(u, { cache: 'no-cache' })))
+    // 图标逐个缓存：单个失败（404/MIME）不再致命，避免 addAll 原子失败导致整个 SW 永不激活 → 离线直接白屏。
+    await Promise.allSettled(ICON_FILES.concat(AUTO_ICON_FILES, PERF_ICON_FILES, MARKNOTE_ICON_FILES).map((f) => cache.add(f)))
+    // 新版本缓存就绪 → 立即跳过 waiting 激活（自动更新）；activate 清旧缓存后广播 SW_UPDATED。
+    await self.skipWaiting()
+  })())
+})
+
+// 兼容保留：页面仍可主动发 SKIP_WAITING（skipWaiting 幂等，对已激活 SW 无副作用）
+// 批次 49-2：standalone PWA 页面启动时自报 client id，通知点击据此优先聚焦 PWA 窗口。
+// 旧实现 matchAll(includeUncontrolled:true) 后无条件 focus 第一个客户端，若用户浏览器里
+// 开着同源普通标签页且它排在前面，点通知会把整个浏览器窗口提到 PWA 前面抢走焦点。
+let standaloneClientId = ''
+self.addEventListener('message', (e) => {
+  if (e.data && e.data.type === 'SKIP_WAITING') self.skipWaiting()
+  if (e.data && e.data.type === 'STANDALONE_CLIENT' && e.source) standaloneClientId = e.source.id || ''
+})
+
+// 通知点击（2026-11-04 通知渠道改造）：聚焦已打开的应用，没有则打开首页。
+// 通知本身由页面侧（utils/webNotify.js）经 showNotification / new Notification 发出，
+// SW 不持有业务数据（SQLite 加密 + 主密钥不落 SW 可达范围），只负责点击路由。
+self.addEventListener('notificationclick', (e) => {
+  e.notification.close()
+  e.waitUntil((async () => {
+    // 只取本 SW 受控窗口，且优先自报的 standalone 客户端；其次聚焦本来就在前台的客户端
+    // （不制造焦点切换）。二者都没有时交给 openWindow —— manifest 的
+    // launch_handler.client_mode=navigate-existing 会复用已开的 PWA 窗口。
+    const cs = await self.clients.matchAll({ type: 'window', includeUncontrolled: false })
+    const target = cs.find(c => standaloneClientId && c.id === standaloneClientId)
+      || cs.find(c => c.focused)
+    if (target && 'focus' in target) {
+      try { return await target.focus() } catch (_) { /* 聚焦失败落 openWindow */ }
+    }
+    return self.clients.openWindow('./workbench/index.html')
+  })())
+})
+
+// periodicSync 周期对表（仅在浏览器授予 periodic-background-sync 权限时触发；
+// 页面侧 registerPeriodicSync 注册）。SW 无数据访问权，只转发消息给打开的页面，
+// 由页面计算「错过的提醒」补偿通知；无存活页面时本轮跳过（下次打开页面补偿兜底）。
+self.addEventListener('periodicsync', (e) => {
+  if (e.tag !== 'reminder-sync') return
+  e.waitUntil((async () => {
+    const cs = await self.clients.matchAll({ type: 'window', includeUncontrolled: true })
+    cs.forEach((c) => { try { c.postMessage({ type: 'REMINDER_SYNC' }) } catch (_) {} })
+  })())
+})
+
+self.addEventListener('activate', (e) => {
+  e.waitUntil(
+    caches.keys()
+      .then((ks) => Promise.all(ks.filter((k) => k !== CACHE).map((k) => caches.delete(k))))
+      .then(() => self.clients.claim())
+      .then(() => self.clients.matchAll({ includeUncontrolled: true }))
+      .then((cs) => cs.forEach((c) => c.postMessage({ type: 'SW_UPDATED', version: CACHE })))
+  )
+})
+
+// 导航兜底：优先缓存里的壳，都没有时给一段最小可渲染 HTML，
+// 保证「任何情况下不白屏」的最终防线（正常路径永远到不了这里）。
+// 批次 139/140/145：auto.html / perf.html / marknote.html 的导航兜底各自回独立壳，
+// 绝不互相回退、也不回退成主应用壳（四套应用彻底独立）。
+async function shellFallback(req) {
+  const cache = await caches.open(CACHE)
+  // 目录 URL（/auto/、/perf/ 等）与显式 index.html 都归位到各自壳。
+  // 旧版只认 /<app>/index.html：server 的目录 302 在 navigate 请求里变成
+  // opaqueredirect 后，/auto/ 落到最后的 workbench 兜底，表现为「点 auto 出工作台」。
+  const pagePath = !!req ? new URL(req.url).pathname : ''
+  const wantsMarknote = /^\/marknote\/(?:index\.html)?$/.test(pagePath)
+  if (wantsMarknote) {
+    return (await cache.match('./marknote/index.html'))
+      || new Response(
+        '<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>MarkNote · 个人笔记本</title><p style="font-family:system-ui;padding:2rem">正在同步资源，请联网后刷新重试。</p>',
+        { status: 200, headers: { 'Content-Type': 'text/html; charset=utf-8' } }
+      )
+  }
+  const wantsPerf = /^\/perf\/(?:index\.html)?$/.test(pagePath)
+  if (wantsPerf) {
+    return (await cache.match('./perf/index.html'))
+      || new Response(
+        '<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>性能测试观测台 · 独立工作台</title><p style="font-family:system-ui;padding:2rem">正在同步资源，请联网后刷新重试。</p>',
+        { status: 200, headers: { 'Content-Type': 'text/html; charset=utf-8' } }
+      )
+  }
+  const wantsAuto = /^\/auto\/(?:index\.html)?$/.test(pagePath)
+  if (wantsAuto) {
+    return (await cache.match('./auto/index.html'))
+      || new Response(
+        '<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>自动化测试分析 · 独立工作台</title><p style="font-family:system-ui;padding:2rem">正在同步资源，请联网后刷新重试。</p>',
+        { status: 200, headers: { 'Content-Type': 'text/html; charset=utf-8' } }
+      )
+  }
+  // v3.16.2：根路径导航（/ 或 /index.html）兜底到应用导航页，绝不回退成任何应用壳。
+  // 注意判定放在四台目录判断之后：/<app>/index.html 已在上面各自拦截，不会走到这里。
+  const wantsPortal = pagePath === '/' || pagePath === '/index.html'
+  if (wantsPortal) {
+    return (await cache.match('./index.html'))
+      || new Response(
+        '<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>应用导航 · C打卡工作台</title><p style="font-family:system-ui;padding:2rem">正在同步资源，请联网后刷新重试。</p>',
+        { status: 200, headers: { 'Content-Type': 'text/html; charset=utf-8' } }
+      )
+  }
+  return (await cache.match('./workbench/index.html'))
+    || new Response(
+      '<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>C打卡</title><p style="font-family:system-ui;padding:2rem">正在同步资源，请联网后刷新重试。</p>',
+      { status: 200, headers: { 'Content-Type': 'text/html; charset=utf-8' } }
+    )
+}
+
+self.addEventListener('fetch', (e) => {
+  const req = e.request
+  if (req.method !== 'GET') return
+
+  // Range 分片必须直通网络：206 不能被 Cache.put 接收，且缓存里的完整响应
+  // 也不能冒充分片响应（没有 Content-Range），否则播放器会拿到错误字节区间。
+  if (req.headers.has('range')) {
+    e.respondWith((async () => {
+      try { return await fetch(req) } catch (_) { return new Response('', { status: 504, statusText: 'offline' }) }
+    })())
+    return
+  }
+
+  // /api/* 是动态数据（health/whoami/users/changes/events SSE/op batch）：绝不缓存、绝不兜底。
+  // 缓存优先会把旧用户列表 / 旧 health 鉴权声明喂给新会话，SSE 长连接更不能被 cache.match 截断。
+  const url = new URL(req.url)
+  if (url.origin === self.location.origin && url.pathname.indexOf('/api/') === 0) {
+    e.respondWith(fetch(req).catch(() => new Response('', { status: 504, statusText: 'offline' })))
+    return
+  }
+
+  // 导航（页面打开）：网络优先 + 响应健康检查。
+  // 关键修复：fetch 收到失败响应（服务挂了 → 404/502/空体）是「正常 resolve」而非 reject，
+  // 旧实现只 catch 网络异常 → 失败响应直接上屏 = 白屏。现在只有 2xx 才采用。
+  // cache:'no-cache'：必须绕过 HTTP 缓存拿最新 HTML（2026-11-04）——默认 cache 模式会命中
+  // 浏览器/CDN（EdgeOne 等静态托管）缓存的旧 index.html，部署新版后页面永远停在旧版。
+  // redirect:'follow'：navigate 请求的 Request.redirect 默认是 manual，server 的目录规范化 /
+  // 未登录跳登录 302 会让 fetch(req) 返回 opaqueredirect（ok=false），旧实现据此落进
+  // shellFallback，把 /auto/ 错认成 workbench。显式 follow 才能拿到最终页面（也避免
+  // 未登录时越过页面级鉴权拿到缓存壳）。
+  if (req.mode === 'navigate') {
+    e.respondWith((async () => {
+      // 不复制 req.headers：导航请求的 Request 带 navigate 模式与 Sec-Fetch-* 头，
+      // 复制进新建 Request 在部分浏览器会构造失败 → respondWith reject → 地址栏 ERR_FAILED。
+      // 同域 cookie 由 credentials:'same-origin' 自动带上，Accept/Sec-Fetch-* 由浏览器重建。
+      try {
+        const navReq = new Request(req.url, {
+          method: 'GET', redirect: 'follow', credentials: 'same-origin', cache: 'no-cache'
+        })
+        const resp = await fetch(navReq)
+        if (resp && resp.ok && resp.type !== 'opaqueredirect') {
+          // 关键（rev7.1）：SW 合成 fetch 的 Sec-Fetch-Dest 不是 document，server 对
+          // 未登录直链 / 无尾斜杠目录会 302；redirect:'follow' 跟随后返回的响应带
+          // redirected=true（URL 列表 > 1），respondWith 把它交给 redirect:manual 的
+          // 导航请求会报 "a redirected response was used for a request whose redirect
+          // mode is not 'follow'"（ERR_FAILED）。也不能把最终页面直接画在原 URL
+          // （地址栏不变、?next= 丢失）——返回客户端跳转页，让浏览器真正导航到最终 URL。
+          if (resp.redirected && resp.url) {
+            return new Response(
+              '<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">' +
+              '<meta http-equiv="refresh" content="0;url=' + resp.url + '"></head>' +
+              '<body><script>location.replace(' + JSON.stringify(resp.url) + ')<' + '/script></body></html>',
+              { status: 200, headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-cache' } }
+            )
+          }
+          return resp
+        }
+      } catch (_) { /* 构造/网络失败 → 再试原请求，最后落兜底 */ }
+      try {
+        const fallback = await fetch(req, { cache: 'no-cache' })
+        if (fallback && fallback.ok && fallback.type !== 'opaqueredirect') return fallback
+      } catch (_) {}
+      return shellFallback(req)
+    })())
+    return
+  }
+
+  // 其余同域资源：缓存优先，未命中则网络并写回缓存；网络失败/失败响应时再查缓存，
+  // 最终兜底空响应（不白屏壳，单文件构建下资源几乎全部内联，此路径极少走到）
+  if (new URL(req.url).origin === self.location.origin) {
+    e.respondWith((async () => {
+      const cache = await caches.open(CACHE)
+      const cached = await cache.match(req)
+      if (cached) return cached
+      try {
+        const resp = await fetch(req)
+        if (resp && resp.ok) {
+          // resp.ok 对 206 也为 true；只有完整 200 才入缓存。
+          // 服务器即使没收到 Range 也可能回带 Content-Range，同样不入缓存。
+          if (resp.status === 200 && !resp.headers.has('content-range')) {
+            try { await cache.put(req, resp.clone()) } catch (_) { /* 写缓存失败不影响本次响应 */ }
+          }
+          return resp
+        }
+      } catch (_) { /* 落兜底 */ }
+      return (await cache.match(req))
+        || new Response('', { status: 504, statusText: 'offline' })
+    })())
+  }
+})

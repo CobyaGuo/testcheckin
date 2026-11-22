@@ -1,0 +1,10 @@
+{
+  "name": "checkin-server-dist",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node start.mjs",
+    "config:print": "node start.mjs --print",
+    "config:init": "node start.mjs --init"
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "name": "Workbench",
+  "short_name": "Workbench",
+  "description": "本地优先的个人工作台：任务、打卡、番茄钟、复盘、日历、统计与常用工具（单文件网页版）",
+  "lang": "zh-CN",
+  "dir": "ltr",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#f4f5f7",
+  "theme_color": "#4f6ef7",
+  "categories": ["productivity", "utilities", "lifestyle"],
+  "icons": [
+    { "src": "./icon-192.20261122-235112-537.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "./icon-512.20261122-235112-537.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "./maskable-512.20261122-235112-537.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" },
+    { "src": "./icon.20261122-235112-537.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+  ]
+}

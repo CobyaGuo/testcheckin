@@ -1,0 +1,7 @@
+{
+  "root": "../..",
+  "dataDir": "dist/server/data",
+  "distDir": "dist",
+  "host": "127.0.0.1",
+  "port": 8100
+}
