@@ -468,9 +468,8 @@
         return { ok: false, reason: 'file-protocol' };
       }
       try {
-        const res = await localFetch(absBase + 'model-manifest.json', { cache: 'no-cache' });
-        if (!res.ok) return { ok: false, reason: 'no-manifest' };
-        manifest = await res.json();
+        manifest = await loadManifest('');
+        if (!manifest) return { ok: false, reason: 'no-manifest' };
         const files = [
           model + '/config.json',
           model + '/tokenizer.json',
@@ -501,10 +500,20 @@
         }
         let okHash = await verifyHash(files, '');
         if (!okHash) {
-          // 缓存错配兜底：带一次性 query 穿透 SW/HTTP 缓存重取真实磁盘文件。
-          // 旧版 SW 的缓存优先可能让 manifest 与权重来自不同版本，重取一致即放行。
+          // 缓存错配兜底：manifest 与权重带一次性 query 一起穿透重取（Cache API 按
+          // 完整 URL 匹配，不同 query 必 miss）。旧版 SW 对 /ai/ 缓存优先时可能让
+          // manifest 与权重来自不同版本：只穿权重不穿 manifest，会拿旧清单比新
+          // 权重，恒判 hash-mismatch；两边一起重取一致才真正放行/判损。
           try {
-            okHash = await verifyHash(files, String(Date.now()));
+            const bust = String(Date.now());
+            const m2 = await loadManifest(bust);
+            if (m2 && m2.hash && String(m2.hash).indexOf('REPLACE') !== 0) {
+              const emb2 = (m2.capabilities && m2.capabilities.embedding) || {};
+              dim = emb2.dim || 0;
+              pooling = emb2.pooling || 'mean';
+              manifest = m2;
+              okHash = await verifyHash(files, bust);
+            }
           } catch (e) { /* 穿透失败保持原判定 */ }
         }
         if (!okHash) return { ok: false, reason: 'hash-mismatch', fp16Missing };
@@ -514,11 +523,18 @@
       }
     }
 
+    // 读本地 manifest（bust 非空时带一次性 query 穿透 SW/HTTP 缓存拿磁盘真实文件）。
+    async function loadManifest(bust) {
+      const res = await localFetch(absBase + 'model-manifest.json' + (bust ? '?__aiv=' + bust : ''), { cache: 'no-cache' });
+      if (!res.ok) return null;
+      return await res.json();
+    }
+
     // 轻量 hash：配置三件套全量 + onnx 首尾各 256KB，SHA-256 拼接。
     // bust 非空时给每个 URL 加一次性查询串：Cache API 的 cache.match 按完整 URL 匹配，
     // 不同 query 必然 miss → 强制穿透 SW 缓存与 HTTP 缓存拿到磁盘上的真实字节。
     // 用途：manifest 与权重若被分别缓存到不同版本，第一次校验会假性不一致；
-    // 穿透重取一次仍不一致，才判定资产真的损坏。
+    // 穿透重取一次（含 manifest 本身）仍不一致，才判定资产真的损坏。
     async function verifyHash(files, bust) {
       let acc = new Uint8Array(0);
       for (const f of files) {
