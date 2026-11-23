@@ -98,12 +98,24 @@ export async function loadServerConfig(env = process.env, fileOverride = '') {
   return { ...cfg, configFile }
 }
 
+/**
+ * 绝对路径转相对落盘值。统一用 '/' 分隔：dist 会被整体复制到其他机器（可能是 Linux），
+ * Windows 的 '\\' 分隔符在那边不是路径分隔符，会导致配置失效。
+ */
+function relativeForConfig(base, target) {
+  if (!base || !target || !path.isAbsolute(target)) return target
+  const r = path.relative(base, target)
+  if (!r) return '.'
+  return r.split(path.sep).join('/')
+}
+
 /** 写回配置文件；root 变化且未显式给 dataDir/distDir 时按新 root 重算默认。返回归一化配置。 */
 export async function writeServerConfig(patch = {}, file = DEFAULT_CONFIG_FILE) {
   const target = path.resolve(file)
+  const configDir = path.dirname(target)
   const current = readConfigFile(target)
   // 与 loadServerConfig 同口径：配置文件里的相对 root 按配置文件所在目录解析。
-  const baseRoot = abs(path.dirname(target), patch.root || current.root || CODE_ROOT)
+  const baseRoot = abs(configDir, patch.root || current.root || CODE_ROOT)
   const def = defaultConfig(baseRoot)
   const next = {
     root: baseRoot,
@@ -113,8 +125,16 @@ export async function writeServerConfig(patch = {}, file = DEFAULT_CONFIG_FILE) 
     port: patch.port === undefined || patch.port === '' ? (current.port || def.port) : patch.port
   }
   const cfg = normalizeConfig(next, CODE_ROOT)
-  const persisted = { root: cfg.root, dataDir: cfg.dataDir, distDir: cfg.distDir, host: cfg.host, port: cfg.port }
-  await fsp.mkdir(path.dirname(target), { recursive: true })
+  // 落盘一律相对路径：root 相对配置文件所在目录，dataDir/distDir 相对 root。
+  // 这样 dist 整体复制到任意机器/任意盘符后，配置仍指向自身目录结构。
+  const persisted = {
+    root: relativeForConfig(configDir, cfg.root),
+    dataDir: relativeForConfig(cfg.root, cfg.dataDir),
+    distDir: relativeForConfig(cfg.root, cfg.distDir),
+    host: cfg.host,
+    port: cfg.port
+  }
+  await fsp.mkdir(configDir, { recursive: true })
   await fsp.writeFile(target, JSON.stringify(persisted, null, 2) + '\n', 'utf8')
   return cfg
 }

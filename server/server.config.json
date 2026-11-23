@@ -1,7 +1,7 @@
 {
-  "root": "D:\\AIAgent\\miniminiprogram_checkin\\checkin-web",
-  "dataDir": "D:\\AIAgent\\miniminiprogram_checkin\\checkin-web\\dist\\server\\data",
-  "distDir": "D:\\AIAgent\\miniminiprogram_checkin\\checkin-web\\dist",
+  "root": "../..",
+  "dataDir": "dist/server/data",
+  "distDir": "dist",
   "host": "127.0.0.1",
   "port": 8100
 }
