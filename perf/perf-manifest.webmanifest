@@ -15,9 +15,9 @@
   "theme_color": "#0f766e",
   "categories": ["developer", "productivity", "utilities"],
   "icons": [
-    { "src": "./perf-icon-192.20261123-120006-738.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
-    { "src": "./perf-icon-512.20261123-120006-738.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
-    { "src": "./perf-maskable-512.20261123-120006-738.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" },
-    { "src": "./perf-icon.20261123-120006-738.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+    { "src": "./perf-icon-192.20261123-123724-926.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "./perf-icon-512.20261123-123724-926.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "./perf-maskable-512.20261123-123724-926.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" },
+    { "src": "./perf-icon.20261123-123724-926.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
   ]
 }
