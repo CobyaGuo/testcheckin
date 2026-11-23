@@ -52,7 +52,7 @@
     if (r === 'file-protocol') return '以 file:// 方式打开时浏览器禁止读取本地模型文件；请用本地 HTTP 服务启动（npm run server:dist:start）后访问，不要双击 index.html';
     if (r === 'no-manifest') return '缺少 ./ai/model-manifest.json（本地 AI 资产不完整）';
     if (r.indexOf('missing:') === 0) return '缺少模型文件：' + r.slice(8);
-    if (r === 'hash-mismatch') return '模型文件指纹与 manifest 不一致（资产可能被改动或下载不完整）';
+    if (r === 'hash-mismatch') return '模型文件指纹与 manifest 不一致：请确认 ./ai/ 整套资产来自同一构建（模型文件与 manifest 需配套），或重新复制完整 dist 目录';
     if (r.indexOf('fetch-failed:') === 0) return '读取本地 AI 资产失败：' + r.slice(13);
     return '本地 AI 资产自检失败：' + r;
   }
@@ -175,6 +175,63 @@
     return { gpu: true, reason: '', code: '' };
   }
   util.backendFallbackPlan = backendFallbackPlan;
+
+  /**
+   * 纯 JS SHA-256（FIPS 180-4）→ 小写 hex，与 Web Crypto subtle.digest 输出逐字节一致。
+   * 用途：非安全上下文（局域网 http，window.crypto.subtle 为 undefined）下资产指纹校验兜底，
+   * 避免把「浏览器不提供 subtle」误判为「模型文件指纹不一致」。也作为可单测纯函数挂在此处。
+   */
+  util.jsSha256Hex = function jsSha256Hex(data) {
+    const K = [
+      0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,0x3956c25b,0x59f111f1,0x923f82a4,0xab1c5ed5,
+      0xd807aa98,0x12835b01,0x243185be,0x550c7dc3,0x72be5d74,0x80deb1fe,0x9bdc06a7,0xc19bf174,
+      0xe49b69c1,0xefbe4786,0x0fc19dc6,0x240ca1cc,0x2de92c6f,0x4a7484aa,0x5cb0a9dc,0x76f988da,
+      0x983e5152,0xa831c66d,0xb00327c8,0xbf597fc7,0xc6e00bf3,0xd5a79147,0x06ca6351,0x14292967,
+      0x27b70a85,0x2e1b2138,0x4d2c6dfc,0x53380d13,0x650a7354,0x766a0abb,0x81c2c92e,0x92722c85,
+      0xa2bfe8a1,0xa81a664b,0xc24b8b70,0xc76c51a3,0xd192e819,0xd6990624,0xf40e3585,0x106aa070,
+      0x19a4c116,0x1e376c08,0x2748774c,0x34b0bcb5,0x391c0cb3,0x4ed8aa4a,0x5b9cca4f,0x682e6ff3,
+      0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208,0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2
+    ];
+    const h = [0x6a09e667,0xbb67ae85,0x3c6ef372,0xa54ff53a,0x510e527f,0x9b05688c,0x1f83d9ab,0x5be0cd19];
+    const bitLen = data.length * 8;
+    // padding 后总长 = 向上取整到 64 的倍数（len 数据 + 1 字节 0x80 + 8 字节长度）。
+    // 用 floor+1 会在 len+9 恰为 64 倍数时多算一块（如 len=55），必须 ceil。
+    const total = Math.ceil((data.length + 9) / 64) * 64;
+    const buf = new Uint8Array(total);
+    buf.set(data); buf[data.length] = 0x80;
+    const hi = Math.floor(bitLen / 0x100000000), lo = bitLen >>> 0;
+    buf[total - 8] = (hi >>> 24) & 255; buf[total - 7] = (hi >>> 16) & 255;
+    buf[total - 6] = (hi >>> 8) & 255; buf[total - 5] = hi & 255;
+    buf[total - 4] = (lo >>> 24) & 255; buf[total - 3] = (lo >>> 16) & 255;
+    buf[total - 2] = (lo >>> 8) & 255; buf[total - 1] = lo & 255;
+    const w = new Uint32Array(64);
+    for (let off = 0; off < total; off += 64) {
+      for (let i = 0; i < 16; i++) {
+        const j = off + i * 4;
+        w[i] = ((buf[j] << 24) | (buf[j + 1] << 16) | (buf[j + 2] << 8) | buf[j + 3]) >>> 0;
+      }
+      for (let i = 16; i < 64; i++) {
+        const x = w[i - 15], y = w[i - 2];
+        const s0 = ((x >>> 7) | (x << 25)) ^ ((x >>> 18) | (x << 14)) ^ (x >>> 3);
+        const s1 = ((y >>> 17) | (y << 15)) ^ ((y >>> 19) | (y << 13)) ^ (y >>> 10);
+        w[i] = (w[i - 16] + s0 + w[i - 7] + s1) >>> 0;
+      }
+      let a = h[0], b = h[1], cc = h[2], d = h[3], e = h[4], f = h[5], g = h[6], hh = h[7];
+      for (let i = 0; i < 64; i++) {
+        const S1 = ((e >>> 6) | (e << 26)) ^ ((e >>> 11) | (e << 21)) ^ ((e >>> 25) | (e << 7));
+        const ch = (e & f) ^ (~e & g);
+        const t1 = (hh + S1 + ch + K[i] + w[i]) >>> 0;
+        const S0 = ((a >>> 2) | (a << 30)) ^ ((a >>> 13) | (a << 19)) ^ ((a >>> 22) | (a << 10));
+        const maj = (a & b) ^ (a & cc) ^ (b & cc);
+        const t2 = (S0 + maj) >>> 0;
+        hh = g; g = f; f = e; e = (d + t1) >>> 0;
+        d = cc; cc = b; b = a; a = (t1 + t2) >>> 0;
+      }
+      h[0] = (h[0] + a) >>> 0; h[1] = (h[1] + b) >>> 0; h[2] = (h[2] + cc) >>> 0; h[3] = (h[3] + d) >>> 0;
+      h[4] = (h[4] + e) >>> 0; h[5] = (h[5] + f) >>> 0; h[6] = (h[6] + g) >>> 0; h[7] = (h[7] + hh) >>> 0;
+    }
+    return h.map(x => x.toString(16).padStart(8, '0')).join('');
+  };
 
   /* ============================ 跨 tab 互斥锁 ============================ */
   function withLock(name, fn) {
@@ -463,8 +520,6 @@
     // 用途：manifest 与权重若被分别缓存到不同版本，第一次校验会假性不一致；
     // 穿透重取一次仍不一致，才判定资产真的损坏。
     async function verifyHash(files, bust) {
-      const c = global.crypto && global.crypto.subtle;
-      if (!c) return false;
       let acc = new Uint8Array(0);
       for (const f of files) {
         const url = absBase + f + (bust ? '?__aiv=' + bust : '');
@@ -481,9 +536,25 @@
           acc = concat(acc, bytes);
         }
       }
-      const digest = await c.digest('SHA-256', acc);
-      const hex = [...new Uint8Array(digest)].map((x) => x.toString(16).padStart(2, '0')).join('');
-      return hex === manifest.hash;
+      const hex = await sha256Hex(acc);
+      return !!hex && hex === manifest.hash;
+    }
+    /**
+     * SHA-256 摘要（小写 hex）。Web Crypto 的 subtle.digest 只在安全上下文（https / localhost）
+     * 可用；局域网 http（如 http://192.168.x.x:8100）下 window.crypto.subtle 为 undefined，
+     * 若据此 return false 会把「非安全上下文」误判为 hash-mismatch，导致另一台 server 上
+     * 勾选知识库恒报「模型文件指纹与 manifest 不一致」，而本地 localhost 正常。
+     * 这里优先用 subtle，缺失时回退到 util.jsSha256Hex（纯 JS，输出逐字节一致，强度不降低）。
+     */
+    async function sha256Hex(bytes) {
+      const c = global.crypto && global.crypto.subtle;
+      if (c && typeof c.digest === 'function') {
+        try {
+          const digest = await c.digest('SHA-256', bytes);
+          return [...new Uint8Array(digest)].map((x) => x.toString(16).padStart(2, '0')).join('');
+        } catch (e) { /* 落到纯 JS 实现 */ }
+      }
+      return util.jsSha256Hex(bytes);
     }
     function concat(a, b) {
       const out = new Uint8Array(a.length + b.length);
