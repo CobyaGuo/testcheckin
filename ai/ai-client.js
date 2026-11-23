@@ -46,6 +46,16 @@
   const EMBED_BATCH_WEBGPU = 48;     // WebGPU（fp16）内存压力小，可放宽
   const WEBGPU_TIMEOUT_MS = 15000;   // WebGPU 初始化超时，超时即回退 WASM/q8
   function normalizeBackendMode(mode) { return mode === 'wasm' ? 'wasm' : 'auto'; }
+  /** 自检失败 reason → 可读中文提示。三台共用同一文案口径，避免界面只显示空白「资产不可用」。 */
+  function selfCheckReasonText(reason) {
+    const r = String(reason || 'unknown');
+    if (r === 'file-protocol') return '以 file:// 方式打开时浏览器禁止读取本地模型文件；请用本地 HTTP 服务启动（npm run server:dist:start）后访问，不要双击 index.html';
+    if (r === 'no-manifest') return '缺少 ./ai/model-manifest.json（本地 AI 资产不完整）';
+    if (r.indexOf('missing:') === 0) return '缺少模型文件：' + r.slice(8);
+    if (r === 'hash-mismatch') return '模型文件指纹与 manifest 不一致（资产可能被改动或下载不完整）';
+    if (r.indexOf('fetch-failed:') === 0) return '读取本地 AI 资产失败：' + r.slice(13);
+    return '本地 AI 资产自检失败：' + r;
+  }
   function readBackendMode() {
     try { return normalizeBackendMode(global.localStorage && global.localStorage.getItem(BACKEND_KEY)); }
     catch (e) { return 'auto'; }
@@ -395,6 +405,11 @@
     // 只读当前 ./ai/ 目录里已经存在的文件，确认它们与 manifest 记录的 hash 一致，
     // 结果仅用于判断「能不能用」；不比对任何远端版本、不请求更新端点、不下载或替换文件。
     async function selfCheck() {
+      // file:// 下浏览器禁止 fetch 本地文件（URL scheme "file" is not supported），
+      // 先给出明确可操作原因，避免落到晦涩的 fetch-failed 且让界面显示空白报错。
+      if (global.location && String(global.location.protocol || '').toLowerCase() === 'file:') {
+        return { ok: false, reason: 'file-protocol' };
+      }
       try {
         const res = await localFetch(absBase + 'model-manifest.json', { cache: 'no-cache' });
         if (!res.ok) return { ok: false, reason: 'no-manifest' };
@@ -523,7 +538,14 @@
       if (readyPromise) return readyPromise;
       readyPromise = (async () => {
         const check = await selfCheck();
-        if (!check.ok) { setState('unavailable'); return false; }
+        if (!check.ok) {
+          // 把自检失败原因写进 lastError，供三台 lastError() 读取并展示可操作提示；
+          // 此前只 setState('unavailable')，导致界面显示空白「本地 AI 资产不可用：」。
+          lastError = selfCheckReasonText(check.reason);
+          try { console.warn('[local-ai] selfCheck failed:', check.reason); } catch (_) {}
+          setState('unavailable');
+          return false;
+        }
         try {
           await withLock('mn-ai-init-' + dbNamespace, async () => {
             await ensureModelFingerprint();
@@ -717,7 +739,7 @@
   // policy 冻结后暴露给页面与回归脚本：e2e / check:ai 直接读取断言，
   // 任何人把 autoUpdate / updateCheck / publicCdn 改成 true 都会导致验收失败。
   const API = {
-    createAIClient, util, policy: AI_POLICY,
+    createAIClient, util, policy: AI_POLICY, selfCheckReasonText,
     // 供三台设置卡与单测读取；与 embedBatch.js 同源（check:ai 会静态核对数值）。
     constants: Object.freeze({ EMBED_BATCH, EMBED_BATCH_WEBGPU, MAX_EMBED_TEXT_CHARS: 4000, WEBGPU_TIMEOUT_MS }),
     backend: Object.freeze({ key: BACKEND_KEY, read: readBackendMode, write: writeBackendMode })

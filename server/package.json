@@ -5,6 +5,8 @@
   "scripts": {
     "start": "node start.mjs",
     "config:print": "node start.mjs --print",
-    "config:init": "node start.mjs --init"
+    "config:init": "node start.mjs --init",
+    "bootstrap:admin": "node bootstrap-admin.mjs",
+    "user:add": "node user.mjs"
   }
 }
