@@ -442,7 +442,14 @@
           // 模型已放置但未生成 hash：放行（文件已校验存在），提示用户跑 compute 脚本
           return { ok: true, finalized: false, fp16Missing };
         }
-        const okHash = await verifyHash(files);
+        let okHash = await verifyHash(files, '');
+        if (!okHash) {
+          // 缓存错配兜底：带一次性 query 穿透 SW/HTTP 缓存重取真实磁盘文件。
+          // 旧版 SW 的缓存优先可能让 manifest 与权重来自不同版本，重取一致即放行。
+          try {
+            okHash = await verifyHash(files, String(Date.now()));
+          } catch (e) { /* 穿透失败保持原判定 */ }
+        }
         if (!okHash) return { ok: false, reason: 'hash-mismatch', fp16Missing };
         return { ok: true, finalized: true, fp16Missing };
       } catch (e) {
@@ -450,13 +457,18 @@
       }
     }
 
-    // 轻量 hash：配置三件套全量 + onnx 首尾各 256KB，SHA-256 拼接
-    async function verifyHash(files) {
+    // 轻量 hash：配置三件套全量 + onnx 首尾各 256KB，SHA-256 拼接。
+    // bust 非空时给每个 URL 加一次性查询串：Cache API 的 cache.match 按完整 URL 匹配，
+    // 不同 query 必然 miss → 强制穿透 SW 缓存与 HTTP 缓存拿到磁盘上的真实字节。
+    // 用途：manifest 与权重若被分别缓存到不同版本，第一次校验会假性不一致；
+    // 穿透重取一次仍不一致，才判定资产真的损坏。
+    async function verifyHash(files, bust) {
       const c = global.crypto && global.crypto.subtle;
       if (!c) return false;
       let acc = new Uint8Array(0);
       for (const f of files) {
-        const r = await localFetch(absBase + f, { cache: 'no-cache' });
+        const url = absBase + f + (bust ? '?__aiv=' + bust : '');
+        const r = await localFetch(url, { cache: 'no-cache' });
         if (!r.ok) return false;
         const bytes = new Uint8Array(await r.arrayBuffer());
         if (f.endsWith('.onnx')) {
