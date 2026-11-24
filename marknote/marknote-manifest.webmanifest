@@ -31,9 +31,9 @@
     { "name": "最近搜索", "short_name": "搜索", "url": "./index.html?action=search" }
   ],
   "icons": [
-    { "src": "./marknote-notes-192.20261124-005602-884.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
-    { "src": "./marknote-notes-512.20261124-005602-884.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
-    { "src": "./marknote-notes-maskable-512.20261124-005602-884.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" },
-    { "src": "./marknote-notes.20261124-005602-884.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+    { "src": "./marknote-notes-192.20261124-202249-155.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "./marknote-notes-512.20261124-202249-155.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "./marknote-notes-maskable-512.20261124-202249-155.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" },
+    { "src": "./marknote-notes.20261124-202249-155.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
   ]
 }
