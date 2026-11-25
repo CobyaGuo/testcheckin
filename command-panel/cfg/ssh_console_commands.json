@@ -1,0 +1,35 @@
+{
+  "version": 1,
+  "commands": [
+    {
+      "id": "s1",
+      "alias": "看应用日志尾",
+      "body": "tail -n 50 /var/log/app.log",
+      "tags": ["日志"],
+      "note": "",
+      "starred": true,
+      "readonly": true,
+      "envs": []
+    },
+    {
+      "id": "s2",
+      "alias": "服务状态",
+      "body": "systemctl status app",
+      "tags": ["运维"],
+      "note": "",
+      "starred": false,
+      "readonly": true,
+      "envs": []
+    },
+    {
+      "id": "s3",
+      "alias": "磁盘占用",
+      "body": "df -h /",
+      "tags": ["运维"],
+      "note": "",
+      "starred": false,
+      "readonly": true,
+      "envs": []
+    }
+  ]
+}

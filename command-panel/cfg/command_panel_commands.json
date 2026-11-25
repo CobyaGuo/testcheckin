@@ -1,0 +1,66 @@
+{
+  "version": 1,
+  "commands": [
+    {
+      "id": "b01",
+      "alias": "磁盘占用",
+      "type": "shell",
+      "body": "df -h /",
+      "tags": [
+        "系统"
+      ],
+      "note": "查看根分区占用",
+      "cwd": "",
+      "timeoutSec": 30,
+      "parallel": "允许"
+    },
+    {
+      "id": "b02",
+      "alias": "VACUUM auto.db",
+      "type": "cmd",
+      "body": "node vacuum.js /auto.db",
+      "tags": [
+        "备份"
+      ],
+      "note": "回收空闲页，压缩库体积",
+      "cwd": "",
+      "timeoutSec": 60,
+      "parallel": "互斥"
+    },
+    {
+      "id": "b03",
+      "alias": "SSH·印度测试机",
+      "type": "shell",
+      "body": "ssh qa@in-test-01 \"tail -n 50 /var/log/app.log\"",
+      "tags": [
+        "远程"
+      ],
+      "note": "看测试机日志最后 50 行",
+      "cwd": "",
+      "timeoutSec": 30,
+      "parallel": "允许"
+    },
+    {
+      "id": "b04",
+      "alias": "ceshi",
+      "type": "cmd",
+      "body": "dir",
+      "tags": [],
+      "note": "D:\\AIAgent\\miniminiprogram_checkin\\checkin-web\ndir",
+      "cwd": "D:\\AIAgent\\miniminiprogram_checkin\\checkin-web",
+      "timeoutSec": 30,
+      "parallel": "允许"
+    },
+    {
+      "id": "b05",
+      "alias": "ceshi 2",
+      "type": "cmd",
+      "body": "ping -n 10 localhost",
+      "tags": [],
+      "note": "",
+      "cwd": "",
+      "timeoutSec": 30,
+      "parallel": "允许"
+    }
+  ]
+}

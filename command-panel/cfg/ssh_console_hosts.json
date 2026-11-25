@@ -1,0 +1,27 @@
+{
+  "version": 1,
+  "hosts": [
+    {
+      "id": "h1",
+      "name": "in-test-01",
+      "user": "qa",
+      "host": "10.2.1.11",
+      "port": 22,
+      "identityFile": "",
+      "tags": ["测试"],
+      "env": "测试",
+      "note": "印度测试机"
+    },
+    {
+      "id": "h2",
+      "name": "us-jumpbox",
+      "user": "ops",
+      "host": "10.3.0.5",
+      "port": 22,
+      "identityFile": "",
+      "tags": ["跳板"],
+      "env": "跳板",
+      "note": ""
+    }
+  ]
+}
