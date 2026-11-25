@@ -99,9 +99,15 @@ def runner_main(payload):
 
     try:
         spec = json.loads(base64.b64decode(payload).decode("utf-8"))
+        env = None
+        overrides = spec.get("env")
+        if overrides:
+            env = dict(os.environ)
+            env.update(overrides)
         child = subprocess.Popen(
             spec.get("cmdline") or spec["argv"],
             cwd=spec.get("cwd") or None,
+            env=env,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -166,7 +172,7 @@ import tempfile
 from datetime import datetime
 from pathlib import Path
 
-from PySide6.QtCore import QProcess, QSize, Qt, QTimer, Signal
+from PySide6.QtCore import QProcess, QProcessEnvironment, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QFontDatabase, QTextCharFormat, QTextCursor
 from PySide6.QtWidgets import (
     QAbstractItemView, QApplication, QButtonGroup, QCheckBox, QDialog, QFrame,
@@ -188,6 +194,7 @@ TYPES = ("shell", "cmd", "python")
 PARALLEL_MODES = ("允许", "互斥")
 OUTPUT_LIMIT = 1024 * 1024          # 单次运行输出缓冲上限 ~1MB，超过即截断
 HISTORY_LIMIT = 60                  # 全局执行记录保留条数
+RECORD_UI_LIMIT = 10                # 界面最多展示的执行记录条数，更早的只看日志
 
 # ---------------------------------------------------------------------------
 # 所有视觉样式集中在此唯一 QSS 常量；其余代码不再调用 setStyleSheet。
@@ -354,17 +361,28 @@ def default_commands():
 
 
 def load_config(path):
-    """返回 (commands, warnings)。任何字段缺失/损坏都逐字段回退默认值，绝不抛异常给界面。"""
+    """返回 (commands, warnings, settings)。字段缺失/损坏逐字段回退默认值，绝不抛异常给界面。
+
+    settings 为全局设置：skipTimeout=True 时所有命令忽略各自超时，不限时运行。
+    """
     warnings = []
     fallback = default_commands()
+    default_settings = {"skipTimeout": False}
     if not path.exists():
-        return fallback, warnings
+        return fallback, warnings, dict(default_settings)
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
     except Exception as exc:
-        return fallback, ["JSON 解析失败：%s（已回退默认配置）" % exc]
+        return fallback, ["JSON 解析失败：%s（已回退默认配置）" % exc], dict(default_settings)
     if not isinstance(raw, dict):
-        return fallback, ["根节点不是对象（已回退默认配置）"]
+        return fallback, ["根节点不是对象（已回退默认配置）"], dict(default_settings)
+
+    settings = dict(default_settings)
+    skip_raw = raw.get("skipTimeout", False)
+    if not isinstance(skip_raw, bool):
+        warnings.append("skipTimeout 非 bool→false")
+        skip_raw = False
+    settings["skipTimeout"] = skip_raw
 
     version = raw.get("version", 1)
     if isinstance(version, bool) or not isinstance(version, int) or version < 1:
@@ -468,12 +486,13 @@ def load_config(path):
         cmd["parallel"] = parallel
 
         out.append(cmd)
-    return out, warnings
+    return out, warnings, settings
 
 
-def save_config(path, commands):
+def save_config(path, commands, settings=None):
     """原子写：同目录临时文件 → fsync → os.replace，返回 None 表示成功。"""
-    data = {"version": 1, "commands": commands}
+    skip = bool(settings.get("skipTimeout")) if isinstance(settings, dict) else False
+    data = {"version": 1, "skipTimeout": skip, "commands": commands}
     tmp = None
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -944,6 +963,26 @@ class RunState:
 # ---------------------------------------------------------------------------
 # 编辑对话框（QDialog 模态，Esc 默认关闭）
 # ---------------------------------------------------------------------------
+class TimeoutSpinBox(QSpinBox):
+    """超时输入框：0 = 不限时（特殊值文本「不限时」），且允许直接清空输入（空 = 不限时）。
+
+    Qt 私有层把「空文本」硬编码为保留当前值（validate/valueFromText 拦不到），
+    这里用 textEdited 钩子兜底：用户把输入清空时立即落为 0，显示「不限时」。
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setRange(0, 86400)              # 0 = 不限时
+        self.setSuffix(" 秒")
+        self.setSpecialValueText("不限时")
+        self.setKeyboardTracking(False)      # 输完再提交，避免打字中途误写配置
+        self.lineEdit().textEdited.connect(self._on_text_edited)
+
+    def _on_text_edited(self, text):
+        if text.strip() == "" and self.value() != 0:
+            self.setValue(0)                 # 显示随之变为「不限时」
+
+
 class CommandDialog(QDialog):
     def __init__(self, parent, command, all_tags, is_new=False):
         super().__init__(parent)
@@ -996,12 +1035,11 @@ class CommandDialog(QDialog):
         self.cwd_edit.setPlaceholderText("留空则使用启动目录")
         root.addLayout(self._row("工作目录", self.cwd_edit))
 
-        self.timeout_spin = QSpinBox()
-        self.timeout_spin.setRange(0, 86400)          # 0 = 不限时
+        self.timeout_spin = TimeoutSpinBox()
         self.timeout_spin.setValue(command["timeoutSec"])
-        self.timeout_spin.setSuffix(" 秒")
-        self.timeout_spin.setSpecialValueText("不限时")
-        self.timeout_spin.setToolTip("0 或留空表示不限时，命令只能手动中断")
+        self.timeout_spin.setToolTip(
+            "0、留空或选择「不限时」表示不限时，命令只能手动中断；\n"
+            "若主界面勾选了「全局跳过超时」，此项不生效")
         root.addLayout(self._row("超时", self.timeout_spin))
 
         parallel_row = QHBoxLayout()
@@ -1141,6 +1179,13 @@ class CommandDialog(QDialog):
 # ---------------------------------------------------------------------------
 # 主窗口
 # ---------------------------------------------------------------------------
+def _unbuffered_env():
+    """QProcess 环境副本 + PYTHONUNBUFFERED=1：子进程 stdout 不做块缓冲，print 一行实时一行。"""
+    env = QProcessEnvironment.systemEnvironment()
+    env.insert("PYTHONUNBUFFERED", "1")
+    return env
+
+
 class CommandPanel(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -1152,7 +1197,8 @@ class CommandPanel(QMainWindow):
         self.setStatusBar(self.status_bar)
 
         migration_note = migrate_config()
-        self.commands, warnings = load_config(CONFIG_PATH)
+        self.commands, warnings, settings = load_config(CONFIG_PATH)
+        self.skip_timeout = settings["skipTimeout"]   # 全局跳过超时开关（侧栏可切换）
         self.active_by_id = {}      # cmd_id -> set(RunState)，同一命令允许多实例（允许模式）
         self.records = []           # 最新在前
         self.record_seq = 0
@@ -1269,6 +1315,14 @@ class CommandPanel(QMainWindow):
         self.cmd_list.itemPressed.connect(self._on_item_pressed)
         side_layout.addWidget(self.cmd_list, 1)
 
+        self.skip_timeout_cb = QCheckBox("全局跳过超时")
+        self.skip_timeout_cb.setChecked(self.skip_timeout)
+        self.skip_timeout_cb.setToolTip(
+            "勾选后所有命令忽略各自的超时设置，不限时运行；\n"
+            "对正在运行的命令立即生效，超时定时器会被停掉")
+        self.skip_timeout_cb.toggled.connect(self._on_skip_timeout)
+        side_layout.addWidget(self.skip_timeout_cb)
+
         new_btn = QPushButton("＋ 新建命令")
         new_btn.setProperty("role", "ghost")
         new_btn.setCursor(Qt.PointingHandCursor)
@@ -1299,6 +1353,8 @@ class CommandPanel(QMainWindow):
         stats_cap = QLabel("最近运行")
         stats_cap.setObjectName("cap")
         stats_layout.addWidget(stats_cap)
+        self.global_log_hint = self._make_log_hint_label()
+        stats_layout.addWidget(self.global_log_hint)
         self.global_records_host = QWidget()
         self.global_records_layout = QVBoxLayout(self.global_records_host)
         self.global_records_layout.setContentsMargins(0, 0, 0, 0)
@@ -1366,6 +1422,8 @@ class CommandPanel(QMainWindow):
         records_cap = QLabel("执行记录")
         records_cap.setObjectName("cap")
         detail_layout.addWidget(records_cap)
+        self.detail_log_hint = self._make_log_hint_label()
+        detail_layout.addWidget(self.detail_log_hint)
         self.detail_records_host = QWidget()
         self.detail_records_layout = QVBoxLayout(self.detail_records_host)
         self.detail_records_layout.setContentsMargins(0, 0, 0, 0)
@@ -1520,7 +1578,12 @@ class CommandPanel(QMainWindow):
             self.detail_badges.addWidget(badge)
         self.detail_badges.addStretch(1)
         cwd = cmd["cwd"] or "—"
-        timeout_text = "不限时" if cmd["timeoutSec"] <= 0 else "%ss" % cmd["timeoutSec"]
+        if cmd["timeoutSec"] <= 0:
+            timeout_text = "不限时"
+        elif self.skip_timeout:
+            timeout_text = "%ss（全局已跳过）" % cmd["timeoutSec"]
+        else:
+            timeout_text = "%ss" % cmd["timeoutSec"]
         self.detail_meta.setText("工作目录：%s    ·    超时：%s    ·    并行：%s" %
                                  (cwd, timeout_text, cmd["parallel"]))
         note = cmd["note"].strip()
@@ -1550,25 +1613,63 @@ class CommandPanel(QMainWindow):
         )))
         self.stat_labels["tags"].setText(str(len(self._all_tags())))
 
+    def _make_log_hint_label(self):
+        """记录溢出提示标签：超过界面显示上限时出现，点击链接打开日志文件。"""
+        hint = QLabel()
+        hint.setObjectName("muted")
+        hint.setTextFormat(Qt.RichText)
+        hint.setWordWrap(True)
+        hint.setOpenExternalLinks(False)
+        hint.linkActivated.connect(lambda _link: self._open_log())
+        hint.setVisible(False)
+        return hint
+
     def _refresh_records_view(self):
-        # 记录控件跨“统计页 / 详情页”复用：只摘下、不销毁
+        # 记录控件跨“统计页 / 详情页”复用：只摘下、不销毁。
+        # 界面最多展示最近 RECORD_UI_LIMIT 条；更早的只在日志里（含完整输出）。
         clear_layout(self.detail_records_layout, reuse=True)
         clear_layout(self.global_records_layout, reuse=True)
         detail = self._find_command(self.selected_id)
         layout = self.detail_records_layout if detail else self.global_records_layout
-        source = [r for r in self.records if detail and r.cmd_id == detail["id"]] if detail else self.records[:15]
-        for rec in source:
+        if detail:
+            all_source = [r for r in self.records if r.cmd_id == detail["id"]]
+        else:
+            all_source = self.records
+        for rec in all_source[:RECORD_UI_LIMIT]:
             layout.addWidget(rec)
             rec.show()   # clear_layout 里显式 hide 过，重新挂回时要恢复显示
         layout.addStretch(1)
+        # 溢出提示：给出日志完整路径，点链接直接打开
+        hint_text = ('仅显示最近 %d 条 · 更早的执行记录（含完整输出）请查看日志：'
+                     '<a href="open-log">%s</a>' % (RECORD_UI_LIMIT, str(LOG_PATH)))
+        for hint in (self.global_log_hint, self.detail_log_hint):
+            hint.setText(hint_text)
+            hint.setVisible(False)
+        (self.detail_log_hint if detail else self.global_log_hint).setVisible(
+            len(all_source) > RECORD_UI_LIMIT)
 
     # ---------------- 编辑 / 保存 ----------------
     def _persist(self):
-        error = save_config(CONFIG_PATH, self.commands)
+        error = save_config(CONFIG_PATH, self.commands,
+                            {"skipTimeout": self.skip_timeout})
         if error:
             self._status("写回 commands.json 失败：%s" % error, 8000)
             return False
         return True
+
+    def _on_skip_timeout(self, checked):
+        """全局超时开关：即时持久化，并对运行中的实例立即生效（停掉超时定时器）。"""
+        self.skip_timeout = checked
+        if checked:
+            for states in self.active_by_id.values():
+                for state in states:
+                    if state.timeout_timer is not None:
+                        state.timeout_timer.stop()
+                        state.timeout_timer = None
+        if self._persist():
+            self._refresh_detail()
+            self._status("已开启全局跳过超时：所有命令不限时运行" if checked
+                         else "已关闭全局跳过超时：按各命令超时设置执行", 6000)
 
     def open_edit_dialog(self, cid=None, preset_tag=None):
         is_new = cid is None
@@ -1647,9 +1748,10 @@ class CommandPanel(QMainWindow):
         elapsed_timer.start()
         state.elapsed_timer = elapsed_timer
 
-        # 0（或配置里留空）= 不限时：不创建定时器，命令一直跑到完成或手动中断
+        # 0（或配置里留空）= 不限时：不创建定时器，命令一直跑到完成或手动中断。
+        # 全局「跳过超时」开启时同样不限时，优先级高于单条命令的设置。
         timeout_sec = cmd["timeoutSec"]
-        if timeout_sec > 0:
+        if not self.skip_timeout and timeout_sec > 0:
             timeout_timer = QTimer(self)
             timeout_timer.setSingleShot(True)
             timeout_timer.setInterval(timeout_sec * 1000)
@@ -1685,6 +1787,9 @@ class CommandPanel(QMainWindow):
 
         # 整段脚本语义：shell 直接把 body 原文交给 bash/sh -c；cmd/python 先落
         # 临时脚本再交给真实解释器。cd / 变量 / 缩进块因此与终端粘贴执行一致。
+        # PYTHONUNBUFFERED=1：子进程 stdout 不做块缓冲，print 一行就实时转发一行；
+        # python 再叠加 -u 双保险；shell/cmd 脚本里内嵌的 python 也因此实时输出。
+        proc.setProcessEnvironment(_unbuffered_env())
         if typ != "shell":
             try:
                 state.script_path = prepare_script(state.cmd)
@@ -1697,13 +1802,13 @@ class CommandPanel(QMainWindow):
         body = state.cmd["body"]
         script = state.script_path
         if os.name == "nt":
-            spec = {"cwd": effective_cwd}
+            spec = {"cwd": effective_cwd, "env": {"PYTHONUNBUFFERED": "1"}}
             if typ == "cmd":
                 spec["cmdline"] = 'cmd.exe /c "%s"' % script   # 路径加引号，兼容空格
             elif typ == "shell":
                 spec["argv"] = [shutil.which("bash") or shutil.which("sh") or "sh", "-c", body]
             else:
-                spec["argv"] = [python_exe(), script]
+                spec["argv"] = [python_exe(), "-u", script]
             payload = base64.b64encode(
                 json.dumps(spec, ensure_ascii=False).encode("utf-8")
             ).decode("ascii")
@@ -1732,7 +1837,7 @@ class CommandPanel(QMainWindow):
             proc.start(shutil.which("bash") or shutil.which("sh") or "sh",
                        ["-c", state.cmd["body"]])
         else:
-            proc.start(python_exe(), [script])
+            proc.start(python_exe(), ["-u", script])
 
     def _read(self, state, is_error):
         if state.done:
@@ -1883,6 +1988,37 @@ class CommandPanel(QMainWindow):
             self.run_command(cmd["id"])
 
 
+def make_app_icon():
+    """代码绘制窗口/任务栏图标（无外部资产文件）：终端卡片 + 红黄绿圆点 + 提示符与光标。"""
+    from PySide6.QtCore import QRectF
+    from PySide6.QtGui import QIcon, QPainter, QPixmap, QPen
+
+    pm = QPixmap(128, 128)
+    pm.fill(Qt.transparent)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.Antialiasing)
+    # 圆角终端卡片
+    p.setPen(Qt.NoPen)
+    p.setBrush(QColor("#111a2c"))
+    p.drawRoundedRect(QRectF(6, 6, 116, 116), 26, 26)
+    # 顶部标题条（上圆角，下补直角）
+    p.setBrush(QColor("#1d2b4a"))
+    p.drawRoundedRect(QRectF(6, 6, 116, 36), 26, 26)
+    p.drawRect(QRectF(6, 26, 116, 16))
+    for idx, color in enumerate(("#ff6b6b", "#f5c04e", "#3ddc97")):
+        p.setBrush(QColor(color))
+        p.drawEllipse(QRectF(22 + idx * 16, 19, 10, 10))
+    # 提示符 ">"
+    p.setPen(QPen(QColor("#e8eef9"), 9, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+    p.drawLine(32, 62, 54, 80)
+    p.drawLine(54, 80, 32, 98)
+    # 光标 "_"
+    p.setPen(QPen(QColor("#4f8dff"), 9, Qt.SolidLine, Qt.RoundCap))
+    p.drawLine(64, 98, 94, 98)
+    p.end()
+    return QIcon(pm)
+
+
 def main():
     rotate_log_if_needed()   # 启动时检查一次；超限则旧文件转 .old，本次从空文件开始
     atexit.register(close_log)
@@ -1897,6 +2033,7 @@ def main():
             pass
     app = QApplication(sys.argv)
     app.setFont(system_font())
+    app.setWindowIcon(make_app_icon())
     app.setStyleSheet(QSS)          # 唯一一次全局样式设置
     window = CommandPanel()
     window.show()

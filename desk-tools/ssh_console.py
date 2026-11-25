@@ -70,145 +70,173 @@ UI_FONT = "Microsoft YaHei UI" if os.name == "nt" else "SF Pro Text"
 # ---------------------------------------------------------------------------
 QSS = r"""
 QWidget {
-    background: #14161d; color: #e8eaf0;
+    background: #0d1017; color: #dfe4ee;
     font-family: "__UI_FONT__"; font-size: 12px;
 }
-QMainWindow, QDialog { background: #14161d; }
-QDialog { border: 1px solid #2c3040; border-radius: 12px; }
-QStatusBar { background: #181b23; color: #8b93a5; border-top: 1px solid #2c3040; font-size: 10.5px; }
-QStatusBar QLabel { color: #8b93a5; }
+QMainWindow, QDialog { background: #0d1017; }
+QDialog { border: 1px solid #242b3d; border-radius: 12px; }
+QStatusBar { background: #131722; color: #7d8598; border-top: 1px solid #242b3d; font-size: 10px; }
+QStatusBar QLabel { color: #7d8598; }
 
-QFrame#tabbar { background: #181b23; border: 0; border-bottom: 1px solid #2c3040; }
-QFrame#sessionTab {
-    background: #262a36; border: 1px solid #2c3040;
-    border-top: 2px solid transparent; border-radius: 9px;
+/* -- 顶部应用栏 -- */
+QFrame#appbar { background: #131722; border: 0; border-bottom: 1px solid #242b3d; }
+QLabel#appTitle { color: #dfe4ee; font-size: 13px; font-weight: 700; }
+QLabel#appSummary { color: #7d8598; font-size: 11px; }
+QLabel#appDot {
+    min-width: 9px; max-width: 9px; min-height: 9px; max-height: 9px;
+    border-radius: 4px; background: #3ddc97;
 }
-QFrame#sessionTab:hover { background: #2d3240; }
-QFrame#sessionTab[active="true"] { background: #232833; border-top: 2px solid #3b82f6; }
-QFrame#commandBar { background: #232833; border: 0; border-bottom: 1px solid #2c3040; }
-QFrame#inputBar { background: #1a1e27; border-top: 1px solid #2c3040; }
-QFrame#ctrlBar { background: #181b23; border-top: 0; }
-QFrame#card { background: #262a36; border: 1px solid #2c3040; border-radius: 9px; }
-QLabel#tabName { color: #e8eaf0; font-size: 11px; font-weight: 600; }
-QLabel#tabMeta { color: #8b93a5; font-size: 9.5px; }
-QLabel#dot {
-    min-width: 8px; max-width: 8px; min-height: 8px; max-height: 8px;
-    border-radius: 4px; background: #f87171;
+
+/* -- 左侧会话列表 -- */
+QFrame#sidebar { background: #131722; border: 0; border-right: 1px solid #242b3d; }
+QLabel#sideHeader { color: #7d8598; font-size: 10px; font-weight: 700; letter-spacing: 1px; }
+QFrame#sessionCard {
+    background: #131722; border: 1px solid #242b3d; border-radius: 10px;
 }
-QLabel#dot[state="connected"] { background: #34d399; }
-QLabel#dot[state="connecting"] { background: #fbbf24; }
-QLabel#dot[state="idle"] { background: #fbbf24; }
-QLabel#dot[state="disconnected"] { background: #f87171; }
-QLabel#prompt { color: #5eead4; font-size: 10.5px; font-family: Consolas; }
-QLabel#quickLabel { color: #5b6270; font-size: 9.5px; font-weight: 700; }
-QLabel#hint { color: #4a5160; font-size: 9.5px; }
+QFrame#sessionCard:hover { background: #161b28; }
+QFrame#sessionCard[active="true"] {
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #1d2740, stop:1 #1a2135);
+    border: 1px solid #33507e;
+}
+QLabel#cardName { color: #dfe4ee; font-size: 12px; font-weight: 600; }
+QLabel#cardName[dim="true"] { color: #b9c0d0; }
+QLabel#cardHost { color: #7d8598; font-size: 10.5px; font-family: Consolas; }
+QLabel#cardState { font-size: 10px; color: #7d8598; }
+QLabel#cardState[state="connected"] { color: #5a9049; }
+QLabel#sideTag {
+    color: #7d8598; font-size: 10px; text-align: left;
+    background: #181d2b; border: 0; border-radius: 7px;
+}
+QPushButton#sideTagBtn {
+    background: transparent; border: 0; border-radius: 7px;
+    color: #7d8598; font-size: 10px; padding: 5px 8px; text-align: left;
+}
+QPushButton#sideTagBtn:hover { background: #181d2b; color: #dfe4ee; }
+QPushButton#sideTagBtn:checked { background: #22304d; color: #9cc3ff; }
+
+/* -- 会话头（右侧工作区顶部） -- */
+QFrame#sessionHeader { background: #131722; border: 0; border-bottom: 1px solid #242b3d; }
+QLabel#headerName { color: #dfe4ee; font-size: 12.5px; font-weight: 700; }
+QLabel#headerMeta { color: #7d8598; font-size: 10.5px; font-family: Consolas; }
+
+/* -- 快捷命令抽屉 -- */
+QFrame#drawer { background: #181d2b; border: 0; border-top: 1px solid #242b3d; }
+QFrame#drawerPanel { background: #131722; border: 0; border-top: 1px solid #242b3d; }
+QLabel#quickLabel { color: #7d8598; font-size: 10px; font-weight: 700; letter-spacing: 1px; }
+QLabel#hint { color: #5a6274; font-size: 9.5px; }
 QLabel#pillGroup { font-size: 9.5px; font-weight: 700; }
-QLabel#envChip { font-size: 10px; border-radius: 99px; padding: 1px 7px; border: 1px solid #343949; color: #8b93a5; }
-QLabel#envChip[env="生产"] { color: #f87171; background: #332025; border-color: #8b3540; }
-QLabel#envChip[env="测试"] { color: #6ee7b7; background: #1e302b; border-color: #2f6b59; }
-QLabel#envChip[env="跳板"] { color: #93c5fd; background: #202c42; border-color: #3b5991; }
-QLabel#targetChip { color: #93c5fd; border: 1px solid #3b5991; border-radius: 99px; padding: 2px 8px; font-size: 10px; }
-QLabel#receiptOk { color: #34d399; font-size: 10.5px; }
-QLabel#receiptFail { color: #f87171; font-size: 10.5px; }
-QLabel#safetyText { color: #fbbf24; font-size: 11px; }
+QLabel#envChip { font-size: 10px; border-radius: 99px; padding: 1px 7px; border: 1px solid #242b3d; color: #7d8598; }
+QLabel#envChip[env="生产"] { color: #ff9c9c; background: #3a2226; border-color: #5a2a31; }
+QLabel#envChip[env="测试"] { color: #7fb0ff; background: #22304d; border-color: #33507e; }
+QLabel#envChip[env="跳板"] { color: #9cc3ff; background: #22304d; border-color: #33507e; }
+QLabel#targetChip { color: #9cc3ff; border: 1px solid #33507e; border-radius: 99px; padding: 2px 8px; font-size: 10px; }
+QLabel#receiptOk { color: #3ddc97; font-size: 10.5px; }
+QLabel#receiptFail { color: #ff6b6b; font-size: 10.5px; }
+QLabel#safetyText { color: #f5c04e; font-size: 11px; }
+QLabel#riskHint { color: #f5c04e; font-size: 10px; }
 QFrame#safetyBar { background: #332318; border: 1px solid #854f0b; border-radius: 8px; }
-QPushButton[role="pin"]:checked { background: #263148; border-color: #3b82f6; color: #93c5fd; }
-QLabel[role="pill"][tone="0"] { color: #93c5fd; }
+QPushButton[role="pin"]:checked { background: #22304d; border-color: #4f8dff; color: #9cc3ff; }
+QLabel[role="pill"][tone="0"] { color: #9cc3ff; }
 QLabel[role="pill"][tone="1"] { color: #6ee7b7; }
 QLabel[role="pill"][tone="2"] { color: #fcd34d; }
 QLabel[role="pill"][tone="3"] { color: #c4b5fd; }
 QLabel[role="pill"][tone="4"] { color: #f9a8d4; }
 QLabel[role="pill"][tone="5"] { color: #67e8f9; }
-QLabel#field { color: #8b93a5; font-size: 10.5px; }
+QLabel#field { color: #7d8598; font-size: 10.5px; }
 
 QPushButton {
-    background: #262a36; color: #b9c0d0; border: 1px solid #343949;
+    background: #181d2b; color: #b9c0d0; border: 1px solid #242b3d;
     border-radius: 99px; padding: 5px 13px; font-size: 11px; font-weight: 600;
 }
-QPushButton:hover { background: #303646; color: #e8eaf0; }
-QPushButton:pressed { background: #3b82f6; color: #ffffff; }
-QPushButton:disabled { background: #1f222c; color: #565e70; border-color: #2c3040; }
-QPushButton[role="primary"] { background: #3b82f6; border-color: #3b82f6; color: #ffffff; }
-QPushButton[role="primary"]:hover { background: #5094ff; border-color: #5094ff; }
-QPushButton[role="danger"] { background: #5e2730; border-color: #8b3540; color: #fecaca; }
+QPushButton:hover { background: #222939; color: #dfe4ee; }
+QPushButton:pressed { background: #4f8dff; color: #ffffff; }
+QPushButton:disabled { background: #141824; color: #565e70; border-color: #242b3d; }
+QPushButton[role="primary"] { background: #4f8dff; border-color: #4f8dff; color: #ffffff; }
+QPushButton[role="primary"]:hover { background: #699dff; border-color: #699dff; }
+QPushButton[role="danger"] { background: #3a2226; border-color: #5a2a31; color: #ff9c9c; }
+QPushButton[role="danger"]:hover { background: #4a2a30; color: #ffc4c4; }
 QPushButton[role="pill"] {
-    background: #262a36; border: 1px solid #343949; border-radius: 99px;
-    padding: 4px 11px; font-size: 10.5px; font-weight: 500;
+    background: transparent; border: 1px solid #242b3d; border-radius: 99px;
+    padding: 3px 11px; font-size: 10.5px; font-weight: 500; color: #9aa3b5;
 }
-QPushButton[role="pill"]:hover { background: #313749; }
-QPushButton[role="pill"][tone="0"] { color: #93c5fd; border-color: #3b5991; }
+QPushButton[role="pill"]:hover { background: #222939; color: #dfe4ee; }
+QPushButton[role="pill"][tone="0"] { color: #9cc3ff; border-color: #33507e; }
 QPushButton[role="pill"][tone="1"] { color: #6ee7b7; border-color: #2f6b59; }
 QPushButton[role="pill"][tone="2"] { color: #fcd34d; border-color: #786336; }
 QPushButton[role="pill"][tone="3"] { color: #c4b5fd; border-color: #5d5291; }
 QPushButton[role="pill"][tone="4"] { color: #f9a8d4; border-color: #84506d; }
 QPushButton[role="pill"][tone="5"] { color: #67e8f9; border-color: #31727d; }
+QPushButton[role="pill"][tone="risk"] { color: #ff9c9c; background: #3a2226; border-color: #5a2a31; }
 QPushButton[role="fill"] {
-    background: transparent; color: #7cb0ff; border: 1px dashed #3a4660;
+    background: transparent; color: #7fb0ff; border: 1px dashed #33476b;
     border-radius: 99px; padding: 3px 7px; font-size: 9px; font-weight: 500;
 }
-QPushButton[role="fill"]:hover { color: #cfe2f7; border-color: #3b82f6; background: #242b3c; }
+QPushButton[role="fill"]:hover { color: #cfe2f7; border-color: #4f8dff; background: #1d2536; }
 QPushButton[role="mini"] {
-    background: transparent; color: #8b93a5; border: 0; border-radius: 6px;
+    background: transparent; color: #7d8598; border: 0; border-radius: 6px;
     padding: 0; min-width: 18px; max-width: 18px; min-height: 18px; max-height: 18px; font-size: 11px;
 }
-QPushButton[role="mini"]:hover { background: #3a4052; color: #ffffff; }
+QPushButton[role="mini"]:hover { background: #2a3348; color: #ffffff; }
 QPushButton[role="link"] {
-    background: transparent; border: 0; color: #7cb0ff; padding: 2px 5px;
+    background: transparent; border: 0; color: #7fb0ff; padding: 2px 4px;
     font-size: 10.5px; font-weight: 500;
 }
+QPushButton[role="link"][tone="danger"] { color: #ff6b6b; }
+QPushButton[role="link"][tone="dim"] { color: #7d8598; }
 
 QLineEdit, QPlainTextEdit {
-    background: #1b1e27; color: #e8eaf0; border: 1px solid #2c3040;
-    border-radius: 7px; padding: 5px 9px; font-size: 11px; selection-background-color: #3b82f6;
+    background: #141824; color: #dfe4ee; border: 1px solid #242b3d;
+    border-radius: 7px; padding: 5px 9px; font-size: 11px; selection-background-color: #4f8dff;
 }
-QLineEdit:focus, QPlainTextEdit:focus { border: 1px solid #3b82f6; }
+QLineEdit:focus, QPlainTextEdit:focus { border: 1px solid #4f8dff; }
 QLineEdit#search {
-    background: #232733; border: 1px solid #313646; border-radius: 8px;
+    background: #181d2b; border: 1px solid #242b3d; border-radius: 8px;
     padding: 5px 10px; min-width: 150px;
 }
 QPlainTextEdit#input {
-    background: #10131a; color: #e8eaf0; border: 1px solid #2c3040;
-    border-radius: 8px; padding: 5px 10px; font-family: Consolas; font-size: 11.5px;
+    background: #0a0d13; color: #dfe4ee; border: 1px solid #242b3d;
+    border-radius: 9px; padding: 6px 11px; font-family: Consolas; font-size: 12px;
 }
+QPlainTextEdit#input:focus { border: 1px solid #33507e; }
 QPlainTextEdit#code {
-    background: #10131a; color: #c3c9d8; font-family: Consolas; font-size: 11px;
-    border: 1px solid #2c3040; border-radius: 8px; padding: 7px 10px;
+    background: #0a0d13; color: #b6bdcb; font-family: Consolas; font-size: 11px;
+    border: 1px solid #242b3d; border-radius: 8px; padding: 7px 10px;
 }
 QTextEdit#terminal {
-    background: #10131a; color: #c3c9d8; font-family: Consolas; font-size: 11.5px;
-    border: 1px solid #2c3040; border-radius: 8px; padding: 10px 14px;
+    background: #0a0d13; color: #b6bdcb; font-family: Consolas; font-size: 11.5px;
+    border: 0; border-radius: 0; padding: 12px 16px;
 }
-QStackedWidget { background: #10131a; }
+QStackedWidget { background: #0a0d13; }
 QScrollArea { background: transparent; border: 0; }
 QScrollBar:vertical { background: transparent; width: 7px; margin: 0; border: 0; }
-QScrollBar::handle:vertical { background: #41485c; border-radius: 3px; min-height: 22px; }
-QScrollBar::handle:vertical:hover { background: #58617a; }
+QScrollBar::handle:vertical { background: #2c364e; border-radius: 3px; min-height: 22px; }
+QScrollBar::handle:vertical:hover { background: #3d4a6b; }
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
 QScrollBar:horizontal { background: transparent; height: 7px; }
-QScrollBar::handle:horizontal { background: #41485c; border-radius: 3px; min-width: 22px; }
+QScrollBar::handle:horizontal { background: #2c364e; border-radius: 3px; min-width: 22px; }
 QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal { width: 0; }
 
-QListWidget { background: #1b1e27; border: 1px solid #2c3040; border-radius: 8px; padding: 4px; }
+QListWidget { background: #141824; border: 1px solid #242b3d; border-radius: 8px; padding: 4px; }
 QListWidget::item { padding: 7px 8px; border-radius: 6px; color: #c6ccda; }
-QListWidget::item:selected { background: #263148; color: #ffffff; }
-QCheckBox { background: transparent; color: #c6ccda; spacing: 5px; font-size: 11px; }
+QListWidget::item:selected { background: #22304d; color: #ffffff; }
+QCheckBox { background: transparent; color: #9aa3b5; spacing: 5px; font-size: 10.5px; }
 QCheckBox::indicator {
-    width: 12px; height: 12px; border: 1px solid #3a3f4e;
-    border-radius: 3px; background: #1b1e27;
+    width: 12px; height: 12px; border: 1px solid #333c52;
+    border-radius: 3px; background: #141824;
 }
-QCheckBox::indicator:checked { background: #3b82f6; border-color: #3b82f6; }
+QCheckBox::indicator:checked { background: #4f8dff; border-color: #4f8dff; }
 QGroupBox {
-    background: #20242e; border: 1px solid #2c3040; border-radius: 9px;
-    margin-top: 9px; padding: 8px; color: #8b93a5;
+    background: #131722; border: 1px solid #242b3d; border-radius: 9px;
+    margin-top: 9px; padding: 8px; color: #7d8598;
 }
 QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 4px; }
-QDockWidget { background: #181b23; titlebar-close-icon: none; }
-QDockWidget::title { background: #181b23; color: #b9c0d0; padding: 7px 10px; }
+QDockWidget { background: #131722; titlebar-close-icon: none; }
+QDockWidget::title { background: #131722; color: #b9c0d0; padding: 7px 10px; }
 QToolTip {
-    background: #262a36; color: #e8eaf0; border: 1px solid #3b82f6;
+    background: #1d2436; color: #dfe4ee; border: 1px solid #4f8dff;
     border-radius: 7px; padding: 4px 7px; font-size: 11px;
 }
-QMessageBox { background: #1c1f27; }
+QMessageBox { background: #131722; }
 QMessageBox QPushButton { min-width: 72px; }
 """.replace("__UI_FONT__", UI_FONT)
 
@@ -521,10 +549,10 @@ def close_log():
 # 简化 VT：SGR 颜色 + \r 覆盖 + \x1b[2J 清屏，其他控制序列静默吞掉
 # ---------------------------------------------------------------------------
 _SGR_FG = {
-    30: "#1e222c", 31: "#f87171", 32: "#34d399", 33: "#fbbf24",
-    34: "#60a5fa", 35: "#c084fc", 36: "#22d3ee", 37: "#e8eaf0",
-    90: "#64748b", 91: "#fca5a5", 92: "#6ee7b7", 93: "#fde68a",
-    94: "#93c5fd", 95: "#d8b4fe", 96: "#67e8f9", 97: "#ffffff",
+    30: "#1e222c", 31: "#ff6b6b", 32: "#3ddc97", 33: "#f5c04e",
+    34: "#7fb0ff", 35: "#c084fc", 36: "#22d3ee", 37: "#dfe4ee",
+    90: "#64748b", 91: "#ff9c9c", 92: "#6ee7b7", 93: "#fde68a",
+    94: "#9cc3ff", 95: "#d8b4fe", 96: "#67e8f9", 97: "#ffffff",
 }
 _SGR_BG = {
     40: "#14161d", 41: "#5e2730", 42: "#175347", 43: "#5c4b1c",
@@ -1214,7 +1242,7 @@ class RiskDialog(QDialog):
         root = QVBoxLayout(self)
         title = QLabel("即将发送到：%s  （%s@%s · %s）" % (
             host["name"], host["user"], host["host"], host.get("env", "未标注")))
-        title.setObjectName("tabName")
+        title.setObjectName("cardName")
         root.addWidget(title)
         why = QLabel("命中风险：%s%s" % ("、".join(labels) or "生产环境高危操作",
                                        "    来源：" + source if source else ""))
@@ -1405,46 +1433,58 @@ class BatchDialog(QDialog):
 
 
 class SessionTab(QFrame):
+    """左侧会话卡片：状态灯 + 名称 + 环境徽章 / user@host / 状态行。"""
     activated = Signal(object)
     reconnect_clicked = Signal(object)
     close_clicked = Signal(object)
 
+    _STATE_TEXT = {
+        "connected": "已连接",
+        "connecting": "连接中…",
+        "idle": "空闲已断开 · 点击连接",
+        "disconnected": "未连接 · 点击连接",
+    }
+
     def __init__(self, session, parent=None):
         super().__init__(parent)
         self.session = session
-        self.setObjectName("sessionTab")
+        self.setObjectName("sessionCard")
         self.setProperty("active", "false")
         self.setCursor(Qt.PointingHandCursor)
-        self.setToolTip("单击切换；状态灯点击重连；× 关闭会话")
-        row = QHBoxLayout(self)
-        row.setContentsMargins(10, 6, 8, 6)
-        row.setSpacing(7)
+        self.setToolTip("单击切换到此会话；状态灯点击重连；× 关闭会话")
+        col = QVBoxLayout(self)
+        col.setContentsMargins(11, 9, 9, 8)
+        col.setSpacing(4)
+        row1 = QHBoxLayout()
+        row1.setSpacing(7)
         self.dot = QLabel()
         self.dot.setObjectName("dot")
         self.dot.setProperty("state", session.state)
         self.dot.setCursor(Qt.PointingHandCursor)
-        self.dot.mousePressEvent = self._on_dot_clicked   # 灯点击单独处理，不触发 tab 切换
-        col = QVBoxLayout()
-        col.setSpacing(0)
+        self.dot.mousePressEvent = self._on_dot_clicked   # 灯点击单独处理，不触发卡片切换
         self.name = QLabel(session.host["name"])
-        self.name.setObjectName("tabName")
+        self.name.setObjectName("cardName")
+        self.meta = QLabel("%s@%s" % (session.host["user"], session.host["host"]))
+        self.meta.setObjectName("cardHost")
         env = session.host.get("env", "未标注")
-        self.meta = QLabel("%s@%s · 连接 %dms" % (
-            session.host["user"], session.host["host"], session.connect_ms))
-        self.meta.setObjectName("tabMeta")
-        col.addWidget(self.name)
-        col.addWidget(self.meta)
+        self.env_chip = QLabel(env)
+        self.env_chip.setObjectName("envChip")
+        self.env_chip.setProperty("env", env)
         close = QPushButton("×")
         close.setProperty("role", "mini")
         close.setCursor(Qt.PointingHandCursor)
         close.clicked.connect(lambda: self.close_clicked.emit(session))
-        self.env_chip = QLabel(env)
-        self.env_chip.setObjectName("envChip")
-        self.env_chip.setProperty("env", env)
-        row.addWidget(self.dot)
-        row.addLayout(col)
-        row.addWidget(self.env_chip)
-        row.addWidget(close)
+        row1.addWidget(self.dot)
+        row1.addWidget(self.name)
+        row1.addStretch(1)
+        row1.addWidget(self.env_chip)
+        row1.addWidget(close)
+        self.state_label = QLabel(self._STATE_TEXT.get(session.state, session.state))
+        self.state_label.setObjectName("cardState")
+        self.state_label.setProperty("state", session.state)
+        col.addLayout(row1)
+        col.addWidget(self.meta)
+        col.addWidget(self.state_label)
 
     def _on_dot_clicked(self, event):
         self.reconnect_clicked.emit(self.session)
@@ -1461,6 +1501,21 @@ class SessionTab(QFrame):
                              "disconnected": "已断开 · 点击重连"}.get(state, state))
         self.dot.style().unpolish(self.dot)
         self.dot.style().polish(self.dot)
+        self.state_label.setText(self._STATE_TEXT.get(state, state))
+        self.state_label.setProperty("state", state)
+        self.state_label.style().unpolish(self.state_label)
+        self.state_label.style().polish(self.state_label)
+        self.name.setProperty("dim", "true" if state in ("idle", "disconnected") else "false")
+        self.name.style().unpolish(self.name)
+        self.name.style().polish(self.name)
+
+    def set_elapsed(self, text):
+        """连接时长后缀，由主窗口 _tick 每秒刷新。"""
+        base = self._STATE_TEXT.get(self.session.state, self.session.state)
+        if self.session.state == "connected":
+            self.state_label.setText("已连接 %s" % text)
+        else:
+            self.state_label.setText(base)
 
     def mousePressEvent(self, event):
         self.activated.emit(self.session)
@@ -1656,26 +1711,21 @@ class SSHConsole(QMainWindow):
         central = QWidget()
         self.setCentralWidget(central)
         root = QVBoxLayout(central)
-        root.setContentsMargins(10, 8, 10, 8)
-        root.setSpacing(7)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
 
-        # 1. 会话标签行
-        tabbar = QFrame()
-        tabbar.setObjectName("tabbar")
-        tab_row = QHBoxLayout(tabbar)
-        tab_row.setContentsMargins(6, 6, 6, 6)
-        tab_row.setSpacing(6)
-        tab_scroll = QScrollArea()
-        tab_scroll.setWidgetResizable(True)
-        tab_scroll.setFixedHeight(48)
-        tab_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        tab_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        tab_host = QWidget()
-        self.tabs_layout = QHBoxLayout(tab_host)
-        self.tabs_layout.setContentsMargins(0, 0, 0, 0)
-        self.tabs_layout.setSpacing(6)
-        self.tabs_layout.addStretch(1)
-        tab_scroll.setWidget(tab_host)
+        # 1. 顶部应用栏：状态点 + 标题 + 总览 + 新连接 / 管理
+        appbar = QFrame()
+        appbar.setObjectName("appbar")
+        app_row = QHBoxLayout(appbar)
+        app_row.setContentsMargins(14, 8, 14, 8)
+        app_row.setSpacing(10)
+        app_dot = QLabel()
+        app_dot.setObjectName("appDot")
+        app_title = QLabel("SSH 控制台")
+        app_title.setObjectName("appTitle")
+        self.app_summary = QLabel("0 个会话 · 0 台已连接")
+        self.app_summary.setObjectName("appSummary")
         self.overview_label = QLabel("0/0 在线")
         self.overview_label.setObjectName("field")
         batch = QPushButton("批量…")
@@ -1683,66 +1733,183 @@ class SSHConsole(QMainWindow):
         batch.setCursor(Qt.PointingHandCursor)
         batch.setToolTip("把只读命令扇出到多台已连接会话")
         batch.clicked.connect(self._open_batch)
-        new_session = QPushButton("＋ 会话")
+        new_session = QPushButton("＋ 新连接")
         new_session.setProperty("role", "pill")
         new_session.setCursor(Qt.PointingHandCursor)
         new_session.setToolTip("从 cfg/ssh_console_hosts.json 选择主机")
         new_session.clicked.connect(self._new_session_dialog)
-        tab_row.addWidget(tab_scroll, 1)
-        tab_row.addWidget(self.overview_label)
-        tab_row.addWidget(batch)
-        tab_row.addWidget(new_session)
-        root.addWidget(tabbar)
+        manage_btn = QPushButton("⚙ 管理")
+        manage_btn.setProperty("role", "pill")
+        manage_btn.setCursor(Qt.PointingHandCursor)
+        manage_btn.setToolTip("增删改本工具独立的 SSH 快捷命令")
+        manage_btn.clicked.connect(self._toggle_dock)
+        app_row.addWidget(app_dot)
+        app_row.addWidget(app_title)
+        app_row.addWidget(self.app_summary)
+        app_row.addStretch(1)
+        app_row.addWidget(self.overview_label)
+        app_row.addWidget(batch)
+        app_row.addWidget(new_session)
+        app_row.addWidget(manage_btn)
+        root.addWidget(appbar)
 
-        # 2. 快捷命令行
-        cmdbar = QFrame()
-        cmdbar.setObjectName("commandBar")
-        cmd_row = QHBoxLayout(cmdbar)
-        cmd_row.setContentsMargins(8, 5, 8, 5)
-        cmd_row.setSpacing(8)
-        self.search_edit = QLineEdit()
-        self.search_edit.setObjectName("search")
-        self.search_edit.setPlaceholderText("搜索别名 / 命令体 / 备注…")
-        self.search_edit.textChanged.connect(self._on_search)
-        palette = QPushButton("命令面板 ⌘K")
-        palette.setProperty("role", "pill")
-        palette.setCursor(Qt.PointingHandCursor)
-        palette.setToolTip("Ctrl+K：搜别名/命令体/最近使用/收藏")
-        palette.clicked.connect(self._open_palette)
-        manage = QPushButton("管理…")
-        manage.setProperty("role", "pill")
-        manage.setCursor(Qt.PointingHandCursor)
-        manage.setToolTip("增删改本工具独立的 SSH 快捷命令")
-        manage.clicked.connect(self._toggle_dock)
-        pill_scroll = QScrollArea()
-        pill_scroll.setWidgetResizable(True)
-        pill_scroll.setFixedHeight(42)
-        pill_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        pill_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self.pill_host = QWidget()
-        self.pills_layout = FlowLayout(self.pill_host)
-        pill_scroll.setWidget(self.pill_host)
-        cmd_row.addWidget(self.search_edit)
-        cmd_row.addWidget(pill_scroll, 1)
-        cmd_row.addWidget(palette)
-        cmd_row.addWidget(manage)
-        root.addWidget(cmdbar)
+        # 2. 主体：左侧会话列表 + 右侧工作区
+        body = QHBoxLayout()
+        body.setContentsMargins(0, 0, 0, 0)
+        body.setSpacing(0)
+        root.addLayout(body, 1)
 
-        # 3. 终端区（每会话一个 QTextEdit，切 tab 保留历史）
+        sidebar = QFrame()
+        sidebar.setObjectName("sidebar")
+        sidebar.setFixedWidth(232)
+        side_col = QVBoxLayout(sidebar)
+        side_col.setContentsMargins(10, 10, 10, 10)
+        side_col.setSpacing(7)
+        side_head = QLabel("会 话")
+        side_head.setObjectName("sideHeader")
+        side_col.addWidget(side_head)
+        card_scroll = QScrollArea()
+        card_scroll.setWidgetResizable(True)
+        card_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        card_host = QWidget()
+        card_host.setStyleSheet("background: transparent;")
+        self.tabs_layout = QVBoxLayout(card_host)
+        self.tabs_layout.setContentsMargins(0, 0, 0, 0)
+        self.tabs_layout.setSpacing(7)
+        self.tabs_layout.addStretch(1)
+        card_scroll.setWidget(card_host)
+        side_col.addWidget(card_scroll, 1)
+
+        quick_head = QHBoxLayout()
+        quick_head.setContentsMargins(4, 6, 4, 2)
+        quick_label = QLabel("快捷命令")
+        quick_label.setObjectName("sideHeader")
+        manage_link = QPushButton("管理 ✎")
+        manage_link.setProperty("role", "link")
+        manage_link.setCursor(Qt.PointingHandCursor)
+        manage_link.clicked.connect(self._toggle_dock)
+        quick_head.addWidget(quick_label)
+        quick_head.addStretch(1)
+        quick_head.addWidget(manage_link)
+        side_col.addLayout(quick_head)
+        self.sidebar_tags_layout = QVBoxLayout()
+        self.sidebar_tags_layout.setContentsMargins(0, 0, 0, 0)
+        self.sidebar_tags_layout.setSpacing(3)
+        side_col.addLayout(self.sidebar_tags_layout)
+        body.addWidget(sidebar)
+
+        right = QWidget()
+        right_col = QVBoxLayout(right)
+        right_col.setContentsMargins(0, 0, 0, 0)
+        right_col.setSpacing(0)
+        body.addWidget(right, 1)
+
+        # 2.1 会话头：状态灯 + 名称 + 元信息 + 操作链接
+        header = QFrame()
+        header.setObjectName("sessionHeader")
+        head_row = QHBoxLayout(header)
+        head_row.setContentsMargins(16, 8, 12, 8)
+        head_row.setSpacing(10)
+        self.header_dot = QLabel()
+        self.header_dot.setObjectName("dot")
+        self.header_name = QLabel("未连接")
+        self.header_name.setObjectName("headerName")
+        self.header_meta = QLabel("点击「＋ 新连接」开始")
+        self.header_meta.setObjectName("headerMeta")
+        self.header_meta.setFont(QFont("Consolas", 9))
+        head_row.addWidget(self.header_dot)
+        head_row.addWidget(self.header_name)
+        head_row.addWidget(self.header_meta)
+        head_row.addStretch(1)
+        for label, tip, slot, tone in (
+            ("🔍 查找", "Ctrl+F 在当前会话输出中查找", self._find_in_terminal, ""),
+            ("⤓ 导出", "导出当前会话输出（导出前提示脱敏）", self._export_terminal, ""),
+            ("⏸ 续期", "重置空闲计时，避免长任务被掐断", self._keep_alive, ""),
+            ("🖥 外部终端", "用系统 ssh 客户端打开完整终端（全屏程序兜底）", self._open_external_terminal, ""),
+            ("✕ 断开", "断开当前会话（可点击状态灯重连）", self._disconnect_active, "danger"),
+        ):
+            btn = QPushButton(label)
+            btn.setProperty("role", "link")
+            if tone:
+                btn.setProperty("tone", tone)
+            btn.setCursor(Qt.PointingHandCursor)
+            btn.setToolTip(tip)
+            btn.clicked.connect(slot)
+            head_row.addWidget(btn)
+        right_col.addWidget(header)
+
+        # 2.2 终端区（每会话一个 QTextEdit，切换保留历史）
         self.stack = QStackedWidget()
-        root.addWidget(self.stack, 1)
-        empty = QLabel("点击右上角「＋ 会话」连接远程主机\n快捷命令会自动发送到当前活动会话")
+        right_col.addWidget(self.stack, 1)
+        empty = QLabel("点击左上角「＋ 新连接」连接远程主机\n快捷命令会自动发送到当前活动会话")
         empty.setAlignment(Qt.AlignCenter)
         empty.setObjectName("field")
         self.empty_index = self.stack.addWidget(empty)
         self.stack.setCurrentIndex(self.empty_index)
 
-        # 4. 输入行 + 控制条（配色对齐参考图：输入区 #1a1e27、控制条 #181b23）
+        # 2.3 快捷命令抽屉：折叠 pill 行 + 可展开的分组面板
+        drawer = QFrame()
+        drawer.setObjectName("drawer")
+        drawer_row = QHBoxLayout(drawer)
+        drawer_row.setContentsMargins(16, 6, 12, 6)
+        drawer_row.setSpacing(8)
+        drawer_label = QLabel("快捷命令")
+        drawer_label.setObjectName("quickLabel")
+        drawer_row.addWidget(drawer_label)
+        self.drawer_pills_host = QWidget()
+        self.drawer_pills_host.setStyleSheet("background: transparent;")
+        self.drawer_pills_layout = QHBoxLayout(self.drawer_pills_host)
+        self.drawer_pills_layout.setContentsMargins(0, 0, 0, 0)
+        self.drawer_pills_layout.setSpacing(6)
+        drawer_row.addWidget(self.drawer_pills_host, 1)
+        self.drawer_toggle = QPushButton("▾ 展开")
+        self.drawer_toggle.setProperty("role", "link")
+        self.drawer_toggle.setCursor(Qt.PointingHandCursor)
+        self.drawer_toggle.setToolTip("展开全部命令（按标签分组，可搜索）")
+        self.drawer_toggle.clicked.connect(self._toggle_drawer)
+        drawer_row.addWidget(self.drawer_toggle)
+        right_col.addWidget(drawer)
+
+        self.drawer_panel = QFrame()
+        self.drawer_panel.setObjectName("drawerPanel")
+        panel_col = QVBoxLayout(self.drawer_panel)
+        panel_col.setContentsMargins(16, 8, 16, 10)
+        panel_col.setSpacing(7)
+        panel_top = QHBoxLayout()
+        panel_top.setSpacing(8)
+        self.search_edit = QLineEdit()
+        self.search_edit.setObjectName("search")
+        self.search_edit.setPlaceholderText("搜索别名 / 命令体 / 备注…")
+        self.search_edit.textChanged.connect(self._on_search)
+        palette_btn = QPushButton("命令面板 ⌘K")
+        palette_btn.setProperty("role", "pill")
+        palette_btn.setCursor(Qt.PointingHandCursor)
+        palette_btn.setToolTip("Ctrl+K：搜别名/命令体/最近使用/收藏")
+        palette_btn.clicked.connect(self._open_palette)
+        panel_top.addWidget(self.search_edit, 1)
+        panel_top.addWidget(palette_btn)
+        panel_col.addLayout(panel_top)
+        pill_scroll = QScrollArea()
+        pill_scroll.setWidgetResizable(True)
+        pill_scroll.setMinimumHeight(110)
+        pill_scroll.setMaximumHeight(220)
+        pill_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        pill_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.pill_host = QWidget()
+        self.pills_layout = FlowLayout(self.pill_host)
+        pill_scroll.setWidget(self.pill_host)
+        panel_col.addWidget(pill_scroll)
+        self.drawer_panel.hide()
+        right_col.addWidget(self.drawer_panel)
+
+        # 2.4 输入区：提示符 + 输入框 + 发送；下方提示行
         input_bar = QFrame()
         input_bar.setObjectName("inputBar")
-        input_row = QHBoxLayout(input_bar)
-        input_row.setContentsMargins(12, 6, 12, 6)
-        input_row.setSpacing(8)
+        input_col = QVBoxLayout(input_bar)
+        input_col.setContentsMargins(16, 10, 16, 10)
+        input_col.setSpacing(6)
+        input_row = QHBoxLayout()
+        input_row.setSpacing(10)
         self.prompt_label = QLabel("$ ")
         self.prompt_label.setObjectName("prompt")
         self.prompt_label.setFont(QFont("Consolas", 10))
@@ -1751,21 +1918,55 @@ class SSHConsole(QMainWindow):
         self.input_edit.setPlaceholderText("输入命令，回车发送 · Shift+Enter 换行编辑")
         self.input_edit.setToolTip("回车发送；Shift+Enter 换行；↑/↓ 翻历史（多行时 Ctrl+↑/↓）")
         self.input_edit.returnPressed.connect(self._send_typed)
-        self.target_chip = QLabel("→ 未连接")
-        self.target_chip.setObjectName("targetChip")
         send_btn = QPushButton("发送 ⏎")
         send_btn.setProperty("role", "primary")
         send_btn.clicked.connect(self._send_typed)
         input_row.addWidget(self.prompt_label)
         input_row.addWidget(self.input_edit, 1)
-        input_row.addWidget(self.target_chip)
         input_row.addWidget(send_btn)
-        root.addWidget(input_bar)
+        input_col.addLayout(input_row)
+
+        hint_row = QHBoxLayout()
+        hint_row.setSpacing(10)
+        self.risk_hint = QLabel("")
+        self.risk_hint.setObjectName("riskHint")
+        self.target_chip = QLabel("→ 未连接")
+        self.target_chip.setObjectName("targetChip")
+        self.pin_btn = QPushButton("钉住")
+        self.pin_btn.setCheckable(True)
+        self.pin_btn.setProperty("role", "link")
+        self.pin_btn.setProperty("tone", "dim")
+        self.pin_btn.setToolTip("钉住后该会话豁免空闲自动断开")
+        self.pin_btn.toggled.connect(self._toggle_pin)
+        self.receipt_cb = QCheckBox("执行回执")
+        self.receipt_cb.setToolTip("开启后给单行命令加退出码/耗时标记，回显仍显示原命令")
+        self.receipt_cb.toggled.connect(self._toggle_receipt)
+        hint_row.addWidget(self.risk_hint)
+        hint_row.addStretch(1)
+        for label, tip, slot, tone in (
+            ("⌃C 中断", "发送 \\x03 终止远端前台进程", lambda: self._send_control("\x03", "Ctrl+C"), ""),
+            ("Ctrl+D", "发送 \\x04 会退出 shell，需确认", self._ctrl_d_clicked, "danger"),
+            ("Tab 补全", "发送 \\t 补全", lambda: self._send_control("\t", "Tab"), ""),
+            ("清屏", "只清本地显示区，不影响远端", self._clear_display, ""),
+        ):
+            btn = QPushButton(label)
+            btn.setProperty("role", "link")
+            if tone:
+                btn.setProperty("tone", tone)
+            btn.setCursor(Qt.PointingHandCursor)
+            btn.setToolTip(tip)
+            btn.clicked.connect(slot)
+            hint_row.addWidget(btn)
+        hint_row.addWidget(self.target_chip)
+        hint_row.addWidget(self.pin_btn)
+        hint_row.addWidget(self.receipt_cb)
+        input_col.addLayout(hint_row)
+        right_col.addWidget(input_bar)
 
         self.safety_bar = QFrame()
         self.safety_bar.setObjectName("safetyBar")
         safety_row = QHBoxLayout(self.safety_bar)
-        safety_row.setContentsMargins(9, 5, 9, 5)
+        safety_row.setContentsMargins(16, 6, 16, 6)
         self.safety_text = QLabel("")
         self.safety_text.setObjectName("safetyText")
         risk_fill = QPushButton("仅填入")
@@ -1787,47 +1988,53 @@ class SSHConsole(QMainWindow):
             btn.setCursor(Qt.PointingHandCursor)
             safety_row.addWidget(btn)
         self.safety_bar.hide()
-        root.addWidget(self.safety_bar)
-
-        ctrl_bar = QFrame()
-        ctrl_bar.setObjectName("ctrlBar")
-        controls = QHBoxLayout(ctrl_bar)
-        controls.setContentsMargins(10, 5, 10, 5)
-        controls.setSpacing(6)
-        for label, tip, slot, role in (
-            ("Ctrl+C", "发送 \\x03 终止远端前台进程", lambda: self._send_control("\x03", "Ctrl+C"), "pill"),
-            ("Ctrl+D", "发送 \\x04 会退出 shell，需确认", self._ctrl_d_clicked, "danger"),
-            ("Tab", "发送 \\t 补全", lambda: self._send_control("\t", "Tab"), "pill"),
-            ("清屏", "只清本地显示区，不影响远端", self._clear_display, "pill"),
-            ("查找", "Ctrl+F 在当前会话输出中查找", self._find_in_terminal, "pill"),
-            ("导出", "导出当前会话输出（导出前提示脱敏）", self._export_terminal, "pill"),
-            ("续期", "重置空闲计时，避免长任务被掐断", self._keep_alive, "pill"),
-            ("外部终端", "用系统 ssh 客户端打开完整终端（全屏程序兜底）", self._open_external_terminal, "pill"),
-        ):
-            btn = QPushButton(label)
-            btn.setProperty("role", role)
-            btn.setCursor(Qt.PointingHandCursor)
-            btn.setToolTip(tip)
-            btn.clicked.connect(slot)
-            controls.addWidget(btn)
-        self.pin_btn = QPushButton("钉住会话")
-        self.pin_btn.setCheckable(True)
-        self.pin_btn.setProperty("role", "pin")
-        self.pin_btn.setToolTip("钉住后该会话豁免空闲自动断开")
-        self.pin_btn.toggled.connect(self._toggle_pin)
-        controls.addWidget(self.pin_btn)
-        self.receipt_cb = QCheckBox("执行回执")
-        self.receipt_cb.setToolTip("开启后给单行命令加退出码/耗时标记，回显仍显示原命令")
-        self.receipt_cb.toggled.connect(self._toggle_receipt)
-        controls.addWidget(self.receipt_cb)
-        controls.addStretch(1)
-        hint = QLabel("Enter 发送 · Ctrl+K 面板")
-        hint.setObjectName("hint")
-        hint.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
-        controls.addWidget(hint)
-        root.addWidget(ctrl_bar)
+        right_col.addWidget(self.safety_bar)
 
         self._build_dock()
+
+    def _disconnect_active(self):
+        session = self._active_session()
+        if session is None or session.state not in ("connected", "connecting"):
+            self._status("当前没有已连接的会话", 3000)
+            return
+        session.disconnect("手动断开", state="disconnected")
+        self._status("已断开 %s（点状态灯重连）" % session.host["name"], 6000)
+
+    def _toggle_drawer(self):
+        expanded = not self.drawer_panel.isVisible()
+        self.drawer_panel.setVisible(expanded)
+        self.drawer_toggle.setText("▴ 收起" if expanded else "▾ 展开")
+
+    def _refresh_sidebar_tags(self):
+        """左侧标签分组（🗂 日志 12 形态）：点击按该标签过滤并展开抽屉。"""
+        while self.sidebar_tags_layout.count():
+            item = self.sidebar_tags_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.hide()
+                widget.setParent(self)
+                widget.deleteLater()
+        groups = {}
+        for cmd in self._visible_commands():
+            groups.setdefault(cmd["tags"][0] if cmd["tags"] else "其他", []).append(cmd)
+        for tag in sorted(groups):
+            btn = QPushButton("🗂 %s  %d" % (tag, len(groups[tag])))
+            btn.setObjectName("sideTagBtn")
+            btn.setCheckable(True)
+            btn.setChecked(self.search_text == tag.lower())
+            btn.setCursor(Qt.PointingHandCursor)
+            btn.setToolTip("按「%s」过滤快捷命令" % tag)
+            btn.clicked.connect(lambda checked=False, t=tag: self._filter_by_tag(t, checked))
+            self.sidebar_tags_layout.addWidget(btn)
+        self.sidebar_tags_layout.addStretch(1)
+
+    def _filter_by_tag(self, tag, checked):
+        if checked:
+            self.search_edit.setText(tag)
+            if not self.drawer_panel.isVisible():
+                self._toggle_drawer()
+        else:
+            self.search_edit.clear()
 
     def _build_dock(self):
         self.dock = QDockWidget("快捷命令管理", self)
@@ -1877,6 +2084,7 @@ class SSHConsole(QMainWindow):
     def _on_search(self, text):
         self.search_text = text.strip().lower()
         self._refresh_pills()
+        self._refresh_sidebar_tags()
 
     def _visible_commands(self):
         env = self._active_host().get("env", "")
@@ -1887,6 +2095,16 @@ class SSHConsole(QMainWindow):
                 if any(self.search_text in str(value).lower() for value in (
                     c["alias"], c["body"], c["note"], " ".join(c["tags"])))]
 
+    def _make_pill(self, cmd):
+        pill = QPushButton(cmd["alias"] + (" ⚠" if risk_labels(cmd["body"]) else ""))
+        pill.setProperty("role", "pill")
+        pill.setProperty("tone", "risk" if risk_labels(cmd["body"]) else str(tag_tone(cmd["tags"][0] if cmd["tags"] else "其他")))
+        pill.setCursor(Qt.PointingHandCursor)
+        pill.setToolTip("点击直接发送：\n%s%s" % (
+            cmd["body"], "\n备注：" + cmd["note"] if cmd["note"] else ""))
+        pill.clicked.connect(lambda checked=False, c=cmd: self._send_command(c))
+        return pill
+
     def _refresh_pills(self):
         self._clear_layout(self.pills_layout)
         quick_label = QLabel("快捷命令")
@@ -1895,6 +2113,7 @@ class SSHConsole(QMainWindow):
         groups = {}
         for cmd in self._visible_commands():
             groups.setdefault(cmd["tags"][0] if cmd["tags"] else "其他", []).append(cmd)
+        ordered = [cmd for tag in sorted(groups) for cmd in groups[tag]]
         for tag in sorted(groups):
             head = QLabel(tag)
             head.setObjectName("pillGroup")
@@ -1903,14 +2122,7 @@ class SSHConsole(QMainWindow):
             head.setFixedWidth(46)
             self.pills_layout.addWidget(head)
             for cmd in groups[tag]:
-                pill = QPushButton(cmd["alias"])
-                pill.setProperty("role", "pill")
-                pill.setProperty("tone", str(tag_tone(tag)))
-                pill.setCursor(Qt.PointingHandCursor)
-                pill.setToolTip("点击直接发送：\n%s%s" % (
-                    cmd["body"], "\n备注：" + cmd["note"] if cmd["note"] else ""))
-                pill.clicked.connect(lambda checked=False, c=cmd: self._send_command(c))
-                self.pills_layout.addWidget(pill)
+                self.pills_layout.addWidget(self._make_pill(cmd))
                 # 每条命令配一个「填入」按钮：把 body 放进输入区，改完再回车发送
                 fill = QPushButton("填入")
                 fill.setProperty("role", "fill")
@@ -1919,6 +2131,24 @@ class SSHConsole(QMainWindow):
                 fill.clicked.connect(lambda checked=False, c=cmd: self._fill_command(c))
                 self.pills_layout.addWidget(fill)
         self.pill_host.updateGeometry()
+
+        # 折叠态抽屉行：各标签组前几条，一眼可点；展开态走上方分组面板
+        self._clear_layout(self.drawer_pills_layout)
+        for cmd in ordered[:8]:
+            self.drawer_pills_layout.addWidget(self._make_pill(cmd))
+        more = len(ordered) - 8
+        if more > 0:
+            tail = QPushButton("…+%d" % more)
+            tail.setProperty("role", "pill")
+            tail.setProperty("tone", "dim")
+            tail.setCursor(Qt.PointingHandCursor)
+            tail.clicked.connect(self._toggle_drawer)
+            self.drawer_pills_layout.addWidget(tail)
+        self.drawer_toggle.setText(
+            ("▴ 收起" if self.drawer_panel.isVisible() else "▾ 展开（%d 条，按标签分组）" % len(ordered))
+            if ordered else "▾ 展开")
+        self.drawer_pills_host.updateGeometry()
+        self._refresh_sidebar_tags()
 
     def _refresh_dock(self):
         self.dock_list.clear()
@@ -2060,7 +2290,14 @@ class SSHConsole(QMainWindow):
             tab.set_active(sid == self.active_id)
         self.stack.setCurrentIndex(self.views[self.active_id].property("view_index"))
         self.prompt_label.setText("%s@%s:~$ " % (session.host["user"], session.host["host"]))
+        self.prompt_label.setStyleSheet("color: #3ddc97;")
         self.target_chip.setText("→ %s" % session.host["name"])
+        self.header_dot.setProperty("state", session.state)
+        self.header_dot.style().unpolish(self.header_dot)
+        self.header_dot.style().polish(self.header_dot)
+        self.header_name.setText(session.host["name"])
+        self.header_meta.setText("%s · %s · invoke_shell · 200×50" % (
+            session.target, session.host.get("env", "未标注")))
         self.input_edit.bind(session.history, session.draft)
         self.pin_btn.setChecked(session.pinned)
         self._refresh_pills()
@@ -2111,11 +2348,12 @@ class SSHConsole(QMainWindow):
         tab = self.tabs.get(id(session))
         if tab is not None:
             tab.set_state(state)
+        if session is self._active_session():
+            self.header_dot.setProperty("state", state)
+            self.header_dot.style().unpolish(self.header_dot)
+            self.header_dot.style().polish(self.header_dot)
         view = self.views.get(id(session))
         if state == "connected":
-            if tab is not None:
-                tab.meta.setText("%s@%s · 连接 %dms" % (
-                    session.host["user"], session.host["host"], session.connect_ms))
             _log_event("会话建立 · %s · %s" % (session.host["name"], session.target))
             rotate_log_if_needed()
             self._status("已连接 %s · %s" % (session.host["name"], session.target))
@@ -2214,6 +2452,7 @@ class SSHConsole(QMainWindow):
         prod = session.host.get("env") == "生产"
         self.safety_text.setText("高危命令（%s）· 目标 %s（%s）· 来源 %s" % (
             "、".join(labels), session.host["name"], session.host.get("env", "未标注"), source))
+        self.risk_hint.setText("⚠ 高危命令（%s）待确认" % "、".join(labels))
         self.safety_confirm.setVisible(prod)
         self.safety_confirm.setChecked(False)
         self.risk_send_btn.setEnabled(not prod)   # 生产必须重新勾选，不能沿用上次状态
@@ -2226,6 +2465,7 @@ class SSHConsole(QMainWindow):
         if pending is None:
             return
         self.safety_bar.hide()
+        self.risk_hint.setText("")
         self.pending_risk = None
         self.input_edit.setText(pending["text"])
         self.input_edit.setFocus()
@@ -2244,6 +2484,7 @@ class SSHConsole(QMainWindow):
             self._status("目标会话已断开，未发送", 5000)
             return
         self.safety_bar.hide()
+        self.risk_hint.setText("")
         self.pending_risk = None
         _log_event("> 高危命令已确认 · %s · %s" % (session.host["name"], text.replace("\n", " ")))
         lines = text.splitlines()
@@ -2264,6 +2505,7 @@ class SSHConsole(QMainWindow):
 
     def _safety_cancel(self):
         self.safety_bar.hide()
+        self.risk_hint.setText("")
         self.pending_risk = None
         self.input_edit.setFocus()
         self._status("已取消高危命令")
@@ -2446,13 +2688,30 @@ class SSHConsole(QMainWindow):
             self._status("打开系统终端失败：%s" % exc, 8000)
 
     def _tick(self):
+        online = sum(1 for s in self.sessions if s.state == "connected")
+        self.overview_label.setText("%d/%d 在线" % (online, len(self.sessions)))
+        self.app_summary.setText("%d 个会话 · %d 台已连接" % (len(self.sessions), online))
+        # 每张侧栏卡片的状态行（含连接时长）逐秒刷新
+        for session in self.sessions:
+            tab = self.tabs.get(id(session))
+            if tab is None:
+                continue
+            if session.state == "connected" and session.connected_at:
+                minutes = int((time.time() - session.connected_at) / 60)
+                tab.set_elapsed("%d 分钟" % minutes)
+            else:
+                tab.set_elapsed("")
         session = self._active_session()
         if session is None:
             self.prompt_label.setText("$ ")
+            self.prompt_label.setStyleSheet("color: #7d8598;")
             self.target_chip.setText("→ 未连接")
-            self.overview_label.setText("%d/%d 在线" % (
-                sum(1 for s in self.sessions if s.state == "connected"), len(self.sessions)))
-            self.status_bar.showMessage("未连接会话 · 点击「＋ 会话」开始")
+            self.header_dot.setProperty("state", "disconnected")
+            self.header_dot.style().unpolish(self.header_dot)
+            self.header_dot.style().polish(self.header_dot)
+            self.header_name.setText("未连接")
+            self.header_meta.setText("点击「＋ 新连接」开始")
+            self.status_bar.showMessage("未连接会话 · 点击「＋ 新连接」开始")
             return
         idle = int(time.monotonic() - session.last_activity)
         if session.state == "connected" and session.connected_at:
@@ -2461,8 +2720,6 @@ class SSHConsole(QMainWindow):
         else:
             head = {"connecting": "连接中", "idle": "空闲已断开", "disconnected": "已断开"}.get(
                 session.state, session.state)
-        online = sum(1 for s in self.sessions if s.state == "connected")
-        self.overview_label.setText("%d/%d 在线" % (online, len(self.sessions)))
         self.status_bar.showMessage("%s · %s · %s · invoke_shell · %s · 空闲 %02d:%02d · 全局 %d/%d 在线" % (
             session.host["name"], session.target, session.host.get("env", "未标注"),
             head, idle // 60, idle % 60, online, len(self.sessions)))
@@ -2510,6 +2767,50 @@ class SSHConsole(QMainWindow):
         super().closeEvent(event)
 
 
+def make_app_icon():
+    """代码绘制窗口/任务栏图标（无外部资产文件）：终端卡片 + 提示符 + 绿色链路徽标（SSH 连接）。"""
+    from PySide6.QtCore import QRectF
+    from PySide6.QtGui import QIcon, QPainter, QPixmap, QPen
+
+    pm = QPixmap(128, 128)
+    pm.fill(Qt.transparent)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.Antialiasing)
+    # 圆角终端卡片
+    p.setPen(Qt.NoPen)
+    p.setBrush(QColor("#111a2c"))
+    p.drawRoundedRect(QRectF(6, 6, 116, 116), 26, 26)
+    # 顶部标题条（上圆角，下补直角）
+    p.setBrush(QColor("#1d2b4a"))
+    p.drawRoundedRect(QRectF(6, 6, 116, 36), 26, 26)
+    p.drawRect(QRectF(6, 26, 116, 16))
+    for idx, color in enumerate(("#ff6b6b", "#f5c04e", "#3ddc97")):
+        p.setBrush(QColor(color))
+        p.drawEllipse(QRectF(22 + idx * 16, 19, 10, 10))
+    # 提示符 ">"
+    p.setPen(QPen(QColor("#e8eef9"), 9, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+    p.drawLine(32, 60, 54, 78)
+    p.drawLine(54, 78, 32, 96)
+    # 光标 "_"
+    p.setPen(QPen(QColor("#3ddc97"), 9, Qt.SolidLine, Qt.RoundCap))
+    p.drawLine(64, 96, 90, 96)
+    # 右下角绿色圆徽 + 链环（连接/链路意象）
+    p.setPen(Qt.NoPen)
+    p.setBrush(QColor("#3ddc97"))
+    p.drawEllipse(QRectF(88, 84, 32, 32))
+    chain_pen = QPen(QColor("#0d1017"), 4.5)
+    p.setPen(chain_pen)
+    p.setBrush(Qt.NoBrush)
+    for cx, cy in ((99.5, 103.5), (108.5, 96.5)):
+        p.save()
+        p.translate(cx, cy)
+        p.rotate(-45)
+        p.drawEllipse(QRectF(-9, -5.5, 18, 11))
+        p.restore()
+    p.end()
+    return QIcon(pm)
+
+
 def main():
     for message in ensure_configs():
         print(message, file=sys.stderr)
@@ -2524,6 +2825,7 @@ def main():
             pass
     app = QApplication(sys.argv)
     app.setFont(QFont(UI_FONT, 9))
+    app.setWindowIcon(make_app_icon())
     app.setStyleSheet(QSS)                  # 唯一一次全局样式设置
     window = SSHConsole()
     window.show()
