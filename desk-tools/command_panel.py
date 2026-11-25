@@ -172,8 +172,10 @@ import tempfile
 from datetime import datetime
 from pathlib import Path
 
-from PySide6.QtCore import QProcess, QProcessEnvironment, QSize, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QFont, QFontDatabase, QTextCharFormat, QTextCursor
+from PySide6.QtCore import (QProcess, QProcessEnvironment, QRegularExpression,
+                            QSize, Qt, QTimer, Signal)
+from PySide6.QtGui import (QColor, QFont, QFontDatabase, QSyntaxHighlighter,
+                           QTextCharFormat, QTextCursor)
 from PySide6.QtWidgets import (
     QAbstractItemView, QApplication, QButtonGroup, QCheckBox, QDialog, QFrame,
     QGraphicsDropShadowEffect, QGridLayout, QGroupBox, QHBoxLayout, QInputDialog,
@@ -894,18 +896,52 @@ class RunRecord(QFrame):
                 self._append_line(rest, is_error)
                 self.buffers[is_error] = ""
 
+    # 输出内容级别关键词 → 颜色（按行检测，命中即整行着色；先后顺序即优先级）
+    LEVEL_RULES = (
+        (r"\b(?:ERROR|FATAL|CRITICAL)\b|Traceback|Exception|❌|✗|失败|错误", "#f87171"),
+        (r"\bWARN(?:ING)?\b|⚠|警告|已弃用|deprecat", "#f5c04e"),
+        (r"\bINFO\b|退出码|已中断|已超时|已保留", "#6ea8fe"),
+        (r"\bDEBUG\b|调试", "#5f6b85"),
+        (r"\b(?:DONE|OK|Succeeded)\b|✓|成功|完成", "#3ddc97"),
+    )
+    _LEVEL_RES = tuple((QRegularExpression(p), c) for p, c in LEVEL_RULES)
+
+    TS_COLOR = "#55607a"        # 时间戳：暗灰蓝、小一号
+    OUT_COLOR = "#c3c9d8"       # 普通 stdout
+
     def _append_line(self, line, is_error, color=None):
         ts = datetime.now().strftime("%H:%M:%S")
-        if color is None:
-            color = "#f87171" if is_error else "#c3c9d8"
         cursor = self.output.textCursor()
         cursor.movePosition(QTextCursor.End)
+        # 时间戳：独立样式（暗色、缩小），与正文区分
+        ts_fmt = QTextCharFormat()
+        ts_fmt.setForeground(QColor(self.TS_COLOR))
+        ts_fmt.setFontPointSize(max(8.0, self.output.fontPointSize() - 1.5))
+        cursor.insertText("[%s] " % ts, ts_fmt)
+        # 正文：按来源/级别着色；系统提示行用斜体区分
         fmt = QTextCharFormat()
-        fmt.setForeground(QColor(color))
-        cursor.setCharFormat(fmt)
-        cursor.insertText("[%s] %s\n" % (ts, line))
+        fmt.setForeground(QColor(self._line_color(line, is_error, color)))
+        if color is not None:
+            fmt.setFontItalic(True)
+        cursor.insertText("%s\n" % line, fmt)
         self.output.setTextCursor(cursor)
         self.output.verticalScrollBar().setValue(self.output.verticalScrollBar().maximum())
+
+    def _line_color(self, line, is_error, color):
+        """行级颜色：调用方指定 > stderr 红 > 级别关键词 > 普通 stdout。"""
+        if color is not None:
+            return color
+        if is_error:
+            return "#f87171"
+        for rx, c in self._LEVEL_RES:
+            if rx.match(line).hasMatch():
+                return c
+        return self.OUT_COLOR
+
+    def append_receipt(self, text, color):
+        """收尾回执行：✓/✗ + 结果 + 耗时，整行斜体着色，与脚本输出区分开。"""
+        self.flush()
+        self._append_line(text, None, color)
 
 
 def python_exe():
@@ -983,6 +1019,194 @@ class TimeoutSpinBox(QSpinBox):
             self.setValue(0)                 # 显示随之变为「不限时」
 
 
+# ---------------------------------------------------------------------------
+# 代码语法高亮（shell / cmd / python）
+# 规则是轻量正则集，覆盖运维脚本常用写法即可，不追求编译器级精确；
+# 字符串/注释互斥靠 covered 数组按优先级抢占（三引号 > 行内字符串 > 注释 > 其余）。
+# ---------------------------------------------------------------------------
+HL = {
+    "keyword": "#c792ea",   # 关键字：紫
+    "builtin": "#79c0ff",   # 内建命令/函数：蓝
+    "string": "#98d8a0",    # 字符串：绿
+    "comment": "#5f6b85",   # 注释：灰
+    "number": "#f5c04e",    # 数字：琥珀
+    "var": "#f78c6c",       # 变量/参数展开：橙
+    "flag": "#56d4dd",      # 选项开关 -x / --xxx / /x：青
+    "decor": "#ffd866",     # python 装饰器：亮黄
+}
+
+_PY_KEYWORDS = (
+    r"\b(?:False|None|True|and|as|assert|async|await|break|class|continue|def|del|"
+    r"elif|else|except|finally|for|from|global|if|import|in|is|lambda|nonlocal|not|"
+    r"or|pass|raise|return|try|while|with|yield)\b")
+_PY_BUILTINS = (
+    r"\b(?:print|len|range|open|int|str|float|list|dict|set|tuple|bool|sum|min|max|"
+    r"abs|sorted|enumerate|zip|map|filter|isinstance|type|repr|round|any|all|format|"
+    r"input|bytes|exit|sys|os|re|json|time|subprocess|pathlib|Path)\b")
+_SH_KEYWORDS = (
+    r"\b(?:if|then|elif|else|fi|for|while|until|do|done|case|esac|function|select|"
+    r"in|return|exit|local|export|readonly|declare|source|trap|eval)\b")
+_SH_BUILTINS = (
+    r"\b(?:echo|printf|cd|pwd|ls|cat|grep|egrep|awk|sed|cut|sort|uniq|head|tail|wc|"
+    r"tr|tee|find|xargs|curl|wget|ssh|scp|sftp|rsync|tar|gzip|zip|unzip|chmod|chown|"
+    r"chgrp|ln|rm|cp|mv|mkdir|rmdir|touch|kill|killall|ps|top|df|du|free|mount|umount|"
+    r"sudo|apt|apt-get|yum|dnf|systemctl|journalctl|git|docker|kubectl|make|python3?|"
+    r"pip3?|node|npm|jq|sleep|date|basename|dirname|read|alias|which|env|history|clear|"
+    r"test|set|unset|shift|nohup|watch)\b")
+_CMD_KEYWORDS = (
+    r"\b(?:if|else|for|goto|call|exit|pause|shift|setlocal|endlocal|"
+    r"enabledelayedexpansion|exists|errorlevel|not|defined|equ|neq|lss|leq|gtr|geq|"
+    r"do|in|on|off)\b")
+_CMD_BUILTINS = (
+    r"\b(?:echo|set|cd|chdir|dir|copy|xcopy|robocopy|del|erase|ren|rename|md|mkdir|"
+    r"rd|rmdir|move|type|more|find|findstr|sort|attrib|icacls|start|tasklist|taskkill|"
+    r"sc|net|reg|schtasks|wmic|curl|tar|powershell|where|fc|timeout|choice|clip|color|"
+    r"title|ver|vol|pushd|popd|python3?|pip3?|git|docker)\b")
+
+_RX_NUMBER = r"(?<![\w.])\d+(?:\.\d+)?\b"
+_RX_FLAG_SH = r"(?<![\w-])(?:--?[\w][\w-]*)(?![\w-])"
+_RX_FLAG_CMD = r"(?<![\w/])/\w+\b"
+_RX_VAR_SH = r"\$\{[^}]*\}|\$[\w#?@*!$-]+"
+_RX_VAR_CMD = r"%~?[\w][\w~]*%?|%[*~\d]"
+
+
+def _fmt(color, bold=False, italic=False):
+    f = QTextCharFormat()
+    f.setForeground(QColor(color))
+    if bold:
+        f.setFontWeight(QFont.Bold)
+    if italic:
+        f.setFontItalic(True)
+    return f
+
+
+class CodeHighlighter(QSyntaxHighlighter):
+    """给 QPlainTextEdit/QTextEdit 的文档按语言上色；set_language 可随时切换。"""
+
+    def __init__(self, typ, doc):
+        super().__init__(doc)
+        self._strings = []       # 行内字符串规则 [(rx, fmt)]
+        self._others = []        # 其余规则 [(rx, fmt, rx_comment)]
+        self._comment = None     # (rx, fmt)
+        self._triple = None      # python 三引号
+        self.set_language(typ)
+
+    # -------- 语言规则装配 --------
+    def set_language(self, typ):
+        kw, bi, cc = _fmt(HL["keyword"], bold=True), _fmt(HL["builtin"]), None
+        self._strings = [(
+            QRegularExpression(r'"(?:[^"\\\n]|\\.)*"'), _fmt(HL["string"])),
+            (QRegularExpression(r"'(?:[^'\\\n]|\\.)*'"), _fmt(HL["string"]))]
+        self._comment = None
+        self._triple = None
+        if typ == "python":
+            self._triple = _fmt(HL["string"])
+            self._comment = (QRegularExpression(r"#[^\n]*"), _fmt(HL["comment"]))
+            self._others = [
+                (QRegularExpression(_PY_KEYWORDS), kw, None),
+                (QRegularExpression(_PY_BUILTINS), bi, None),
+                (QRegularExpression(r"@[A-Za-z_][\w.]*"), _fmt(HL["decor"]), None),
+                (QRegularExpression(_RX_VAR_SH), _fmt(HL["var"]), None),
+                (QRegularExpression(_RX_FLAG_SH), _fmt(HL["flag"]), None),
+                (QRegularExpression(_RX_NUMBER), _fmt(HL["number"]), None),
+            ]
+        elif typ == "cmd":
+            ci = QRegularExpression.CaseInsensitiveOption
+            self._comment = (QRegularExpression(
+                r"^\s*(?:rem\b.*|::.*)$", ci), _fmt(HL["comment"], italic=True))
+            kwc = QRegularExpression(_CMD_KEYWORDS); kwc.setPatternOptions(ci)
+            bic = QRegularExpression(_CMD_BUILTINS); bic.setPatternOptions(ci)
+            self._others = [
+                (kwc, kw, None), (bic, bi, None),
+                (QRegularExpression(_RX_VAR_CMD), _fmt(HL["var"]), None),
+                (QRegularExpression(_RX_FLAG_CMD), _fmt(HL["flag"]), None),
+                (QRegularExpression(_RX_NUMBER), _fmt(HL["number"]), None),
+            ]
+        else:  # shell
+            self._comment = (QRegularExpression(r"#[^\n]*"), _fmt(HL["comment"]))
+            self._others = [
+                (QRegularExpression(_SH_KEYWORDS), kw, None),
+                (QRegularExpression(_SH_BUILTINS), bi, None),
+                (QRegularExpression(_RX_VAR_SH), _fmt(HL["var"]), None),
+                (QRegularExpression(_RX_FLAG_SH), _fmt(HL["flag"]), None),
+                (QRegularExpression(_RX_NUMBER), _fmt(HL["number"]), None),
+            ]
+        self.rehighlight()
+
+    # -------- 逐块上色 --------
+    def highlightBlock(self, text):
+        covered = [False] * len(text)
+        self.setCurrentBlockState(0)
+
+        # 1. python 三引号块（跨行，靠块状态记忆）
+        if self._triple is not None:
+            self._paint_triple(text, covered)
+
+        # 2. 行内字符串（跳过已被三引号覆盖的区间）
+        for rx, fmt in self._strings:
+            it = rx.globalMatch(text)
+            while it.hasNext():
+                m = it.next()
+                self._paint(text, covered, m.capturedStart(), m.capturedEnd(), fmt)
+
+        # 3. 注释（字符串里的 # 不算注释）
+        if self._comment is not None:
+            rx, fmt = self._comment
+            it = rx.globalMatch(text)
+            while it.hasNext():
+                m = it.next()
+                self._paint(text, covered, m.capturedStart(), m.capturedEnd(), fmt)
+
+        # 4. 关键字/内建/变量/选项/数字
+        for rx, fmt, _ in self._others:
+            it = rx.globalMatch(text)
+            while it.hasNext():
+                m = it.next()
+                self._paint(text, covered, m.capturedStart(), m.capturedEnd(), fmt)
+
+    def _paint_triple(self, text, covered):
+        """三引号串：进入用块状态记录，直到找到闭合符才回到普通态。"""
+        quote = '"""' if self.previousBlockState() == 1 else (
+            "'''" if self.previousBlockState() == 2 else None)
+        i = 0
+        if quote is not None:
+            end = text.find(quote)
+            if end == -1:
+                self._paint(text, covered, 0, len(text), self._triple)
+                self.setCurrentBlockState(1 if quote == '"""' else 2)
+                return
+            self._paint(text, covered, 0, end + 3, self._triple)
+            i = end + 3
+        while i < len(text):
+            d = text.find('"""', i)
+            s = text.find("'''", i)
+            if d == -1 and s == -1:
+                break
+            if d != -1 and (s == -1 or d < s):
+                end = text.find('"""', d + 3)
+                if end == -1:
+                    self._paint(text, covered, d, len(text), self._triple)
+                    self.setCurrentBlockState(1)
+                    return
+                self._paint(text, covered, d, end + 3, self._triple)
+                i = end + 3
+            else:
+                end = text.find("'''", s + 3)
+                if end == -1:
+                    self._paint(text, covered, s, len(text), self._triple)
+                    self.setCurrentBlockState(2)
+                    return
+                self._paint(text, covered, s, end + 3, self._triple)
+                i = end + 3
+
+    def _paint(self, text, covered, start, end, fmt):
+        """逐字符上色；已被更高优先级规则覆盖的区间跳过。"""
+        for i in range(start, min(end, len(text))):
+            if not covered[i]:
+                covered[i] = True
+                self.setFormat(i, 1, fmt)
+
+
 class CommandDialog(QDialog):
     def __init__(self, parent, command, all_tags, is_new=False):
         super().__init__(parent)
@@ -1024,11 +1248,14 @@ class CommandDialog(QDialog):
             type_row.addWidget(btn)
         type_row.addStretch(1)
         root.addLayout(self._row("类型", type_row))
+        self.type_group.buttonClicked.connect(
+            lambda btn: self.body_hl.set_language(btn.text()))
 
         self.body_edit = QPlainTextEdit(command["body"])
         self.body_edit.setObjectName("code")
         self.body_edit.setLineWrapMode(QPlainTextEdit.WidgetWidth)
         self.body_edit.setMinimumHeight(120)
+        self.body_hl = CodeHighlighter(command["type"], self.body_edit.document())
         root.addLayout(self._row("命令体", self.body_edit))
 
         self.cwd_edit = QLineEdit(command["cwd"])
@@ -1416,6 +1643,7 @@ class CommandPanel(QMainWindow):
         self.code_view.setObjectName("code")
         self.code_view.setReadOnly(True)
         self.code_view.setLineWrapMode(QPlainTextEdit.WidgetWidth)
+        self._code_hl = CodeHighlighter("shell", self.code_view.document())
         dc.addWidget(self.code_view)
         detail_layout.addWidget(self.detail_card)
 
@@ -1592,6 +1820,7 @@ class CommandPanel(QMainWindow):
             self.note_label.setText("<b>备注</b><br>%s" % note.replace("&", "&amp;").replace("<", "&lt;")
                                     .replace(">", "&gt;").replace("\n", "<br>"))
         self.code_view.setPlainText(cmd["body"])
+        self._code_hl.set_language(cmd["type"])
         self._refresh_detail_buttons()
 
     def _refresh_detail_buttons(self):
@@ -1953,6 +2182,9 @@ class CommandPanel(QMainWindow):
         record.set_pid(0)
         record.show_log_link()
         elapsed = record.elapsed()
+        mark, rcolor = {"success": ("✓", "#3ddc97"), "fail": ("✗", "#f87171")}.get(
+            key, ("⚠", "#f5c04e"))
+        record.append_receipt("%s %s · 耗时 %s" % (mark, text, fmt_elapsed(elapsed)), rcolor)
         self._log_finish(state, text, key, elapsed)
         self.last_result[state.cmd["id"]] = {"text": text, "elapsed": elapsed, "key": key}
         states = self.active_by_id.get(state.cmd["id"])
