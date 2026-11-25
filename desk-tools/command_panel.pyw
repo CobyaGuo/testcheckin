@@ -1519,6 +1519,12 @@ class CommandPanel(QMainWindow):
 
         self.status_bar = QStatusBar()
         self.setStatusBar(self.status_bar)
+        self.warn_btn = QPushButton("配置告警")
+        self.warn_btn.setObjectName("link")
+        self.warn_btn.setToolTip("查看配置加载时的全部容错回退明细")
+        self.warn_btn.clicked.connect(self._show_config_warnings)
+        self.warn_btn.hide()
+        self.status_bar.addPermanentWidget(self.warn_btn)
 
         migration_note = migrate_config()
         self.commands, warnings, settings, self.usage = load_config(CONFIG_PATH)
@@ -1538,11 +1544,25 @@ class CommandPanel(QMainWindow):
         self._build_ui()
         self._refresh_all()
         QTimer.singleShot(0, self._focus_search)   # 启动即聚焦搜索框
+        self._config_warnings = list(warnings)
         if warnings:
+            self.warn_btn.setText("配置告警 %d" % len(warnings))
+            self.warn_btn.show()
             preview = "；".join(warnings[:2]) + ("…" if len(warnings) > 2 else "")
-            self._status("配置容错加载：%d 处回退（%s）" % (len(warnings), preview), 15000)
+            self._status("配置容错加载：%d 处回退（%s），点右下角查看全部" % (len(warnings), preview), 15000)
         if migration_note:
             self._status(migration_note, 15000)   # 迁移提示优先级更高，覆盖容错提示
+
+    def _show_config_warnings(self):
+        warns = getattr(self, "_config_warnings", [])
+        if not warns:
+            return
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Information)
+        box.setWindowTitle("配置加载告警")
+        box.setText("配置加载时有 %d 处回退，已按默认值继续运行：" % len(warns))
+        box.setDetailedText("\n".join("%d. %s" % (i, w) for i, w in enumerate(warns, 1)))
+        box.exec()
 
     def _status(self, text, ms=4000):
         self.status_bar.showMessage(text, ms)
@@ -1625,7 +1645,11 @@ class CommandPanel(QMainWindow):
         self.search.setObjectName("search")
         self.search.setPlaceholderText("搜索命令…")
         self.search.setToolTip("搜索别名 / 命令体 / 标签 / 备注；空格分隔多个关键词，需全部命中\nCtrl+F 聚焦，Esc 清空")
-        self.search.textChanged.connect(self._on_search)
+        self._search_timer = QTimer(self)
+        self._search_timer.setSingleShot(True)
+        self._search_timer.setInterval(60)     # 数万条时避免每次键入都全量刷新
+        self._search_timer.timeout.connect(self._on_search)
+        self.search.textChanged.connect(self._on_search_changed)
         self.find_shortcut = QShortcut(QKeySequence("Ctrl+F"), self)
         self.find_shortcut.activated.connect(self._focus_search)
         self.clear_shortcut = QShortcut(QKeySequence("Esc"), self)
@@ -1697,6 +1721,11 @@ class CommandPanel(QMainWindow):
         stats_layout = QVBoxLayout(self.stats_page)
         stats_layout.setContentsMargins(12, 12, 12, 12)
         stats_layout.setSpacing(8)
+        empty_tip = QLabel("← 从左侧选择一条命令查看详情与运行\n"
+                           "可用顶部搜索框快速定位，Ctrl+F 聚焦、Esc 清空")
+        empty_tip.setObjectName("muted")
+        empty_tip.setWordWrap(True)
+        stats_layout.addWidget(empty_tip)
         stats_card = QFrame()
         stats_card.setObjectName("card")
         stat_grid = QGridLayout(stats_card)
@@ -1881,7 +1910,16 @@ class CommandPanel(QMainWindow):
         return [c for c in self.commands
                 if self.active_tag is None or self.active_tag in c["tags"]]
 
-    def _on_search(self, text):
+    def _on_search_changed(self, text):
+        """大配置才防抖；小配置保持逐字即时刷新。"""
+        if len(self.commands) > 1000:
+            self._search_timer.start()
+        else:
+            self._on_search(text)
+
+    def _on_search(self, text=None):
+        if text is None:
+            text = self.search.text()
         self.search_text = text
         words = self._search_words()
         self._refresh_tag_pills(words)

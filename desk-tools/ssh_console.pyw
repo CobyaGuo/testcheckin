@@ -18,10 +18,20 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 
-try:
-    import paramiko
-except ImportError:                       # 缺依赖时界面仍可打开，连接时给出明确原因
-    paramiko = None
+# paramiko 懒加载：顶层 import 会把冷启动拖慢约 400ms，
+# 首次连接时才加载；模块级变量保留供测试注入假实现。
+paramiko = None
+
+
+def _get_paramiko():
+    global paramiko
+    if paramiko is None:
+        try:
+            import paramiko as _p
+            paramiko = _p
+        except ImportError:
+            return None
+    return paramiko
 
 from PySide6.QtCore import QObject, QRect, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QKeySequence, QShortcut, QTextCharFormat, QTextCursor, QTextDocument
@@ -900,15 +910,16 @@ class Session(QObject):
         self.state_changed.emit(self, state, reason)
 
     def _auth_failure(self, exc):
-        if paramiko is not None:
-            cls = getattr(paramiko, "AuthenticationException", None)
+        _p = _get_paramiko()
+        if _p is not None:
+            cls = getattr(_p, "AuthenticationException", None)
             if cls is not None and isinstance(exc, cls):
                 return True
         text = str(exc).lower()
         return "authentication" in text or "password" in text or "no auth" in text
 
     def connect(self, password=None, auto_retry=False):
-        if paramiko is None:
+        if _get_paramiko() is None:
             self._set_state("disconnected", "未安装 paramiko（请 pip install paramiko）")
             return
         if password is not None:
@@ -919,14 +930,18 @@ class Session(QObject):
         threading.Thread(target=self._connect_worker, args=(password, auto_retry), daemon=True).start()
 
     def _connect_worker(self, password, auto_retry):
-        client = paramiko.SSHClient()
+        p = _get_paramiko()
+        if p is None:
+            self._set_state("disconnected", "未安装 paramiko（请 pip install paramiko）")
+            return
+        client = p.SSHClient()
         try:
             if KNOWN_HOSTS_PATH.exists():
                 client.load_host_keys(str(KNOWN_HOSTS_PATH))  # 坏的 known_hosts 不阻断连接
         except Exception:
             pass
         try:
-            client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+            client.set_missing_host_key_policy(p.AutoAddPolicy())
             kwargs = dict(
                 hostname=self.host["host"], port=self.host["port"],
                 username=self.host["user"], timeout=CONNECT_TIMEOUT,
@@ -1681,8 +1696,7 @@ class SSHConsole(QMainWindow):
         self.pending_receipts = {}           # token -> {session, text, source}
         self.pending_risk = None
         self.warnings = host_warnings + cmd_warnings
-        if paramiko is None:
-            self.warnings.append("未安装 paramiko：pip install paramiko 后重开")
+        # paramiko 已改为懒加载，启动时不探测；连接失败时会给出明确原因。
 
         self._build_ui()
         self._refresh_pills()
@@ -1932,11 +1946,13 @@ class SSHConsole(QMainWindow):
         self.risk_hint.setObjectName("riskHint")
         self.target_chip = QLabel("→ 未连接")
         self.target_chip.setObjectName("targetChip")
+        self.target_chip.setToolTip("当前命令发送目标；未连接时请先点左上角『＋ 新连接』")
         self.pin_btn = QPushButton("钉住")
         self.pin_btn.setCheckable(True)
         self.pin_btn.setProperty("role", "link")
         self.pin_btn.setProperty("tone", "dim")
-        self.pin_btn.setToolTip("钉住后该会话豁免空闲自动断开")
+        self.pin_btn.setToolTip("钉住后该会话豁免空闲自动断开（未连接时不可用）")
+        self.pin_btn.setEnabled(False)
         self.pin_btn.toggled.connect(self._toggle_pin)
         self.receipt_cb = QCheckBox("执行回执")
         self.receipt_cb.setToolTip("开启后给单行命令加退出码/耗时标记，回显仍显示原命令")
@@ -2353,6 +2369,7 @@ class SSHConsole(QMainWindow):
             self.header_dot.style().unpolish(self.header_dot)
             self.header_dot.style().polish(self.header_dot)
         view = self.views.get(id(session))
+        self.pin_btn.setEnabled(state == "connected")
         if state == "connected":
             _log_event("会话建立 · %s · %s" % (session.host["name"], session.target))
             rotate_log_if_needed()

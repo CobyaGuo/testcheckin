@@ -2,7 +2,7 @@
 """快速查看器（F3：文本/图片）与文件搜索对话框。"""
 import os
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QObject, Qt, QRunnable, Signal
 from PySide6.QtGui import QPixmap, QTextCursor
 from PySide6.QtWidgets import (QDialog, QHBoxLayout, QLabel, QLineEdit,
                                QPlainTextEdit, QPushButton, QTreeWidget,
@@ -10,6 +10,37 @@ from PySide6.QtWidgets import (QDialog, QHBoxLayout, QLabel, QLineEdit,
 
 TEXT_MAX = 4 * 1024 * 1024        # 文本预览上限 4MB
 IMG_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".ico", ".svg"}
+
+
+class TextReadSignals(QObject):
+    done = Signal(str, str)          # path, text（错误文本也走这里）
+
+
+class TextReadTask(QRunnable):
+    """后台读取文本预览，避免 UI 线程被 256KB~4MB 读取阻塞。"""
+
+    def __init__(self, path, limit):
+        super().__init__()
+        self.path = path
+        self.limit = limit
+        self.sig = TextReadSignals()
+
+    def run(self):
+        try:
+            with open(self.path, "rb") as f:
+                data = f.read(self.limit + 1)
+            if len(data) > self.limit:
+                text = (data[:self.limit].decode("utf-8", "replace")
+                        + "\n\n— 文件过大已截断（仅显示前 %s）—" % _fmt_size(self.limit))
+            else:
+                text = data.decode("utf-8", "replace")
+        except (OSError, ValueError) as exc:
+            text = "无法读取：%s" % exc
+        self.sig.done.emit(self.path, text)
+
+
+def _fmt_size(n):
+    return "%dMB" % (n // 1048576) if n >= 1048576 else "%dKB" % (n // 1024)
 
 
 class ViewerDialog(QDialog):
@@ -38,18 +69,13 @@ class ViewerDialog(QDialog):
             edit.setObjectName("viewerText")
             edit.setReadOnly(True)
             edit.setLineWrapMode(QPlainTextEdit.NoWrap)
-            try:
-                with open(path, "rb") as f:
-                    data = f.read(TEXT_MAX + 1)
-                if len(data) > TEXT_MAX:
-                    edit.setPlainText(data[:TEXT_MAX].decode("utf-8", "replace") +
-                                      "\n\n— 文件过大已截断（仅显示前 4MB）—")
-                else:
-                    edit.setPlainText(data.decode("utf-8", "replace"))
-            except (OSError, ValueError) as exc:
-                edit.setPlainText("无法读取：%s" % exc)
-            edit.moveCursor(QTextCursor.Start)
+            edit.setPlainText("正在读取…")
             v.addWidget(edit)
+            self._read_task = TextReadTask(path, TEXT_MAX)   # 持有引用防止被 GC
+            self._read_task.sig.done.connect(lambda _p, text, e=edit: (
+                e.setPlainText(text), e.moveCursor(QTextCursor.Start)))
+            from PySide6.QtCore import QThreadPool
+            QThreadPool.globalInstance().start(self._read_task)
 
         btn = QPushButton("关闭 (Esc)")
         btn.clicked.connect(self.accept)
@@ -161,6 +187,7 @@ class QuickViewerPanel(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self._read_epoch = 0
         self.setObjectName("quickViewer")
         self.lb_cap = QLabel("快速查看")
         self.lb_cap.setObjectName("cap")
@@ -187,6 +214,15 @@ class QuickViewerPanel(QWidget):
         v.addLayout(h)
         v.addWidget(self.stack, 1)
 
+    def _on_read_done(self, epoch, text):
+        if epoch != self._read_epoch:
+            return
+        if text == "正在读取…":
+            return
+        # 后台任务统一用「已截断（前 XXX）」文案，这里补成原面板口径
+        text = text.replace("— 文件过大已截断", "— 已截断")
+        self.text.setPlainText(text)
+
     def show_entry(self, entry):
         if entry is None:
             self.lb_name.setText("—")
@@ -207,17 +243,15 @@ class QuickViewerPanel(QWidget):
                 self.stack.setCurrentIndex(1)
         else:
             self.stack.setCurrentIndex(0)
-            try:
-                if entry.size > self.SKIP_SIZE:
-                    self.text.setPlainText("〔%.1f MB 大文件〕%s\n（快速查看已跳过，F3 可完整查看）"
-                                           % (entry.size / 1048576.0, entry.path))
-                    return
-                with open(entry.path, "rb") as f:
-                    data = f.read(self.TEXT_LIMIT + 1)
-                if len(data) > self.TEXT_LIMIT:
-                    self.text.setPlainText(data[:self.TEXT_LIMIT].decode("utf-8", "replace")
-                                           + "\n— 已截断（前 256KB）—")
-                else:
-                    self.text.setPlainText(data.decode("utf-8", "replace"))
-            except (OSError, ValueError) as exc:
-                self.text.setPlainText("无法读取：%s" % exc)
+            if entry.size > self.SKIP_SIZE:
+                self.text.setPlainText("〔%.1f MB 大文件〕%s\n（快速查看已跳过，F3 可完整查看）"
+                                       % (entry.size / 1048576.0, entry.path))
+                return
+            self.text.setPlainText("正在读取…")
+            self._read_epoch += 1
+            epoch = self._read_epoch
+            self._read_task = TextReadTask(entry.path, self.TEXT_LIMIT)  # 持有引用防 GC
+            self._read_task.sig.done.connect(
+                lambda _p, text, e=epoch: self._on_read_done(e, text))
+            from PySide6.QtCore import QThreadPool
+            QThreadPool.globalInstance().start(self._read_task)

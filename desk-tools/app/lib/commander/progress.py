@@ -70,6 +70,9 @@ class ProgressDialog(QDialog):
     def add_log(self, src):
         self.lb_log.setText("已处理：" + src)
 
+    def set_status(self, text):
+        self.lb_log.setText(text)
+
     def on_conflict(self, src, dst, reply_cb):
         """目标已存在：询问是否覆盖。"""
         from PySide6.QtWidgets import QMessageBox

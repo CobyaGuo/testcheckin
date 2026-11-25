@@ -125,12 +125,17 @@ class FavoritesTree(QWidget):
         self.tree.clear()
         groups = {}
         for fav in self.cfg.get("favorites", []):
-            name = fav["name"]
+            if not isinstance(fav, dict):
+                continue
+            name = str(fav.get("name") or "").strip()
+            path = str(fav.get("path") or "").strip()
+            if not name or not path:
+                continue
             if "/" in name:
                 g, n = name.split("/", 1)
-                groups.setdefault(g, []).append((n, fav["path"]))
+                groups.setdefault(g, []).append((n, path))
             else:
-                groups.setdefault("", []).append((name, fav["path"]))
+                groups.setdefault("", []).append((name, path))
         # 根级收藏在前，分组在后
         from .fsmodel import fav_icon
         for n, p in groups.get("", []):
@@ -258,7 +263,7 @@ class FavoritesTree(QWidget):
                 if it.parent():
                     old_name = it.parent().text(0).lstrip("📁 ") + "/" + old_name
                 fav = next((f for f in self.cfg.get("favorites", [])
-                            if f["name"] == old_name), None)
+                            if isinstance(f, dict) and f.get("name") == old_name), None)
                 if fav:
                     name, ok = QInputDialog.getText(self, "编辑收藏", "名称：",
                                                     text=fav["name"])
@@ -280,7 +285,7 @@ class FavoritesTree(QWidget):
                 if it.parent():
                     name = it.parent().text(0).lstrip("📁 ") + "/" + name
                 self.cfg["favorites"] = [f for f in self.cfg.get("favorites", [])
-                                         if f["name"] != name]
+                                         if not isinstance(f, dict) or f.get("name") != name]
                 from . import config
                 config.save(self.cfg)
                 self.reload()

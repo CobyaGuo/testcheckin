@@ -4,7 +4,6 @@
 用法：icon("copy") 返回随主题着色的 QIcon（16/32px 两档，高分屏清晰）。
 所有图标统一：圆头线条、2px 等效描边、视觉重心居中、无填充杂色。
 """
-import os
 from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import (QColor, QIcon, QPainter, QPainterPath, QPen,
                            QPixmap, QBrush)
@@ -231,29 +230,6 @@ def _folder_path(x, y, w, h):
 # ---------------------------------------------------------------------------
 _MAC_CACHE = {}
 
-_CATEGORY = {
-    "code": ("#5e6ad2", ("py", "js", "ts", "jsx", "tsx", "html", "htm", "css",
-                         "c", "h", "cpp", "hpp", "java", "json", "xml", "yml",
-                         "yaml", "sh", "bat", "cmd", "ps1", "sql", "ini", "toml")),
-    "image": ("#34c759", ("png", "jpg", "jpeg", "gif", "bmp", "webp", "svg",
-                          "ico", "tif", "tiff", "psd")),
-    "audio": ("#af52de", ("mp3", "wav", "flac", "ogg", "m4a", "aac")),
-    "video": ("#ff375f", ("mp4", "mov", "mkv", "avi", "webm", "wmv")),
-    "archive": ("#ff9f0a", ("zip", "rar", "7z", "tar", "gz", "bz2", "xz")),
-    "pdf": ("#ff453a", ("pdf",)),
-    "doc": ("#0a84ff", ("doc", "docx", "xls", "xlsx", "ppt", "pptx", "txt",
-                        "md", "csv", "log", "rtf")),
-    "exe": ("#8e8e93", ("exe", "msi", "dll", "sys", "lnk")),
-}
-
-
-def _category_of(ext):
-    for cat, (_, exts) in _CATEGORY.items():
-        if ext in exts:
-            return cat
-    return None
-
-
 def mac_folder(size=16):
     """macOS 风格蓝色文件夹：浅蓝渐变前板 + 顶部后板小耳。"""
     key = ("folder", size)
@@ -282,47 +258,6 @@ def mac_folder(size=16):
     return ic
 
 
-def mac_file(path, size=16):
-    """macOS 风格文件图标：白纸 + 折角 + 按类型着色的内容线。"""
-    ext = os.path.splitext(path)[1].lower().lstrip(".")
-    key = ("file", ext, size)
-    if key in _MAC_CACHE:
-        return _MAC_CACHE[key]
-    cat = _category_of(ext)
-    color = QColor(_CATEGORY[cat][0] if cat else "#98a0ac")
-    pm = QPixmap(size, size)
-    pm.fill(Qt.transparent)
-    p = QPainter(pm)
-    p.setRenderHint(QPainter.Antialiasing, True)
-    s = size / 16.0
-    p.scale(s, s)
-    # 纸张（右上折角）
-    path = QPainterPath(QPointF(3.5, 1.8))
-    path.lineTo(9.2, 1.8)
-    path.lineTo(12.5, 5.1)
-    path.lineTo(12.5, 14.2)
-    path.lineTo(3.5, 14.2)
-    path.closeSubpath()
-    p.setPen(QPen(QColor("#c3cad4"), 0.8))
-    p.setBrush(QColor("#fdfeff"))
-    p.drawPath(path)
-    fold = QPainterPath(QPointF(9.2, 1.8))
-    fold.lineTo(9.2, 5.1)
-    fold.lineTo(12.5, 5.1)
-    p.setBrush(QColor("#e9eef5"))
-    p.drawPath(fold)
-    # 内容线（类型色）
-    p.setPen(QPen(color, 1.4, Qt.SolidLine, Qt.RoundCap))
-    y = 7.6
-    for wln in (5.6, 5.6, 3.4):
-        p.drawLine(QPointF(5.4, y), QPointF(5.4 + wln, y))
-        y += 1.9
-    p.end()
-    ic = QIcon(pm)
-    _MAC_CACHE[key] = ic
-    return ic
-
-
 def tagged_icon(base, colors, size=16):
     """在基础图标右下角叠加标签色点（最多 3 个）。"""
     key = ("tagged", id(base), tuple(colors), size)
@@ -345,6 +280,17 @@ def tagged_icon(base, colors, size=16):
 
 class _EXTRA:
     """收藏树等专用字形（16x16 线性）。"""
+
+    @staticmethod
+    def _tag(p):               # 标签（右上角打孔的吊牌）
+        path = QPainterPath(QPointF(2.5, 2.5))
+        path.lineTo(8, 2.5)
+        path.lineTo(13.5, 8)
+        path.lineTo(8, 13.5)
+        path.lineTo(2.5, 8)
+        path.closeSubpath()
+        p.drawPath(path)
+        p.drawEllipse(QPointF(10.6, 5.4), 0.9, 0.9)
 
     @staticmethod
     def _monitor(p):           # 桌面

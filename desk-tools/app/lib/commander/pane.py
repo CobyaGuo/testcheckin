@@ -176,7 +176,7 @@ class FilePane(QWidget):
     activate = Signal(object)
     focus_requested = Signal(object)
     quick_searched = Signal(str)     # 快速搜索关键字变化（状态栏显示）
-    smart_done = Signal(int, object)  # 智能文件夹搜索完成（线程→UI）
+    smart_done = Signal(int, object, bool)  # 智能文件夹搜索完成（线程→UI, 是否截断）
 
     filter_both = Signal(str)        # Ctrl+Enter：把过滤条件应用到所有面板
 
@@ -667,6 +667,7 @@ class FilePane(QWidget):
             return
         self._smart_epoch += 1
         self._smart_info = (name, scope, query)
+        self._smart_truncated = False
         self.results_model.removeRows(0, self.results_model.rowCount())
         root = self.results_model.invisibleRootItem()
         tip = QStandardItem(f"⌛ 正在搜索：{query or '*'} （范围：{scope}）")
@@ -676,13 +677,14 @@ class FilePane(QWidget):
         task = _SmartSearch(self, self._smart_epoch, scope, query)
         QThreadPool.globalInstance().start(task)
 
-    @Slot(int, object)
-    def _smart_results(self, epoch, results):
-        self._on_smart_results(epoch, results)
+    @Slot(int, object, bool)
+    def _smart_results(self, epoch, results, truncated):
+        self._on_smart_results(epoch, results, truncated)
 
-    def _on_smart_results(self, epoch, results):
+    def _on_smart_results(self, epoch, results, truncated=False):
         if epoch != self._smart_epoch:
             return
+        self._smart_truncated = bool(truncated)
         self.results_model.removeRows(0, self.results_model.rowCount())
         root = self.results_model.invisibleRootItem()
         name, scope, query = self._smart_info
@@ -697,6 +699,11 @@ class FilePane(QWidget):
             it.setData(e, Qt.UserRole)
             it.setToolTip(e.path)
             root.appendRow(it)
+        if truncated:
+            tip = QStandardItem("⚠ 结果已达上限 %d 条，仅显示前 %d 条；请缩小范围或细化条件"
+                                % (_SmartSearch.MAX_RESULTS, len(results)))
+            tip.setFlags(Qt.NoItemFlags)
+            root.appendRow(tip)
         self.status_changed.emit()
 
     def _result_activated(self, index):
@@ -707,7 +714,9 @@ class FilePane(QWidget):
     def smart_status(self):
         """智能结果视图下的状态栏文本。"""
         name, scope, query = self._smart_info
-        return f"智能文件夹 [{name}]：{self.results_model.rowCount()} 个结果"
+        suffix = "（已截断，仅前 %d 条）" % _SmartSearch.MAX_RESULTS \
+            if getattr(self, "_smart_truncated", False) else ""
+        return f"智能文件夹 [{name}]：{self.results_model.rowCount()} 个结果{suffix}"
 
     def eventFilter(self, obj, ev):
         """快速搜索：可打印字符累积匹配，Backspace 回退，Esc/失焦清除。"""
@@ -852,7 +861,8 @@ class _SmartSearch(QRunnable):
                         break
             if len(results) >= self.MAX_RESULTS:
                 break
-        self.pane.smart_done.emit(self.epoch, results)
+        self.pane.smart_done.emit(self.epoch, results,
+                                  len(results) >= self.MAX_RESULTS)
 
 
 class FileSystemTree(QWidget):

@@ -87,7 +87,7 @@ class BatchRenameDialog(QDialog):
         self.preview.setPlainText("\n".join(lines) or "（无选中项）")
 
     def _apply(self):
-        done = 0
+        jobs = []
         errs = []
         start = self.sp_num.value()
         for i, e in enumerate(self.entries):
@@ -99,15 +99,28 @@ class BatchRenameDialog(QDialog):
             if os.path.lexists(dst):
                 errs.append("已存在，跳过：%s" % new)
                 continue
-            try:
-                os.rename(e.path, dst)
-                done += 1
-            except OSError as exc:
-                errs.append("%s：%s" % (e.name, exc))
+            jobs.append((e.path, dst, e.name))
+        if not jobs:
+            if errs:
+                from PySide6.QtWidgets import QMessageBox
+                QMessageBox.warning(self, "未执行", "\n".join(errs[:10]))
+            else:
+                self.accept()
+            return
+
+        from .operations import RenameTask
+        from .progress import ProgressDialog
+        task = RenameTask(jobs)
+        dlg = ProgressDialog(self.parent(), task, title="批量重命名")
+        dlg.setModal(True)
+        task.sig.progress.connect(dlg.set_progress)
+        task.sig.file_done.connect(dlg.add_log)
+        task.sig.finished.connect(dlg.on_finished)
+        task.sig.finished.connect(dlg.close)
         if errs:
-            from PySide6.QtWidgets import QMessageBox
-            QMessageBox.warning(self, "部分失败",
-                                "成功 %d 项。\n%s" % (done, "\n".join(errs[:10])))
+            dlg.lb_log.setText("跳过 %d 项（目标已存在），详见完成后提示" % len(errs))
+        dlg.show()
+        QThreadPool.globalInstance().start(task)
         self.accept()
 
 

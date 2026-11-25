@@ -92,6 +92,7 @@ class OpSignals(QObject):
     file_done = Signal(str)               # 单个文件完成
     conflict = Signal(str, str, object)   # src, dst, 回调(bool: 覆盖?)
     error = Signal(str, str, object)      # src, 错误文本, 回调(bool: 跳过?)
+    status = Signal(str)                  # 阶段提示（如"正在统计文件大小"）
     finished = Signal(bool)               # 是否有错误
 
 
@@ -135,6 +136,8 @@ class OpTask(QRunnable):
         done = 0
         had_error = False
         items = []
+        if len(self.srcs) > 1:
+            self.sig.status.emit("正在统计文件大小（%d 项）…" % len(self.srcs))
         for s in self.srcs:
             if self.cancelled.is_set():
                 break
@@ -280,6 +283,72 @@ class OpTask(QRunnable):
         return done
 
 
+class RenameTask(QRunnable):
+    """后台批量重命名：大量文件时避免 UI 线程逐个 os.rename 卡死。"""
+
+    def __init__(self, jobs):
+        super().__init__()
+        self.jobs = list(jobs)      # [(src, dst, display_name), ...]
+        self.cancelled = threading.Event()
+        self.sig = OpSignals()
+
+    def run(self):
+        had_error = False
+        total = len(self.jobs)
+        try:
+            self.sig.started.emit(total)
+            for i, (src, dst, name) in enumerate(self.jobs, 1):
+                if self.cancelled.is_set():
+                    break
+                try:
+                    os.rename(src, dst)
+                    self.sig.file_done.emit(name)
+                except OSError as exc:
+                    had_error = True
+                    self.sig.error.emit(name, str(exc), lambda _reply: None)
+                self.sig.progress.emit(i, total)
+        except Exception as exc:
+            had_error = True
+            self.sig.error.emit("", str(exc), lambda _reply: None)
+        finally:
+            self.sig.finished.emit(had_error)
+
+
+class DeleteTask(QRunnable):
+    """后台删除到回收站：SHFileOperationW 可能长时间阻塞，绝不能在 UI 线程调用。"""
+
+    def __init__(self, paths):
+        super().__init__()
+        self.paths = list(paths)
+        self.cancelled = threading.Event()
+        self.sig = OpSignals()
+
+    def run(self):
+        had_error = False
+        total = len(self.paths)
+        try:
+            self.sig.started.emit(total)
+            if self.cancelled.is_set():
+                self.sig.finished.emit(False)
+                return
+            ok = delete_to_recycle_bin(self.paths)
+            if not ok:
+                had_error = True
+                src = self.paths[0] if self.paths else ""
+                self.sig.error.emit(src, "回收站操作失败（非 Windows 或权限不足）",
+                                    lambda _reply: None)
+            else:
+                for i, p in enumerate(self.paths, 1):
+                    self.sig.progress.emit(i, total)
+                    self.sig.file_done.emit(p)
+        except Exception as exc:
+            had_error = True
+            self.sig.error.emit(self.paths[0] if self.paths else "", str(exc),
+                                lambda _reply: None)
+        finally:
+            self.sig.finished.emit(had_error)
+
+
 class OpQueue(QObject):
     """操作队列：跟踪全部后台任务，供操作队列栏显示（FC 的 Operations queue bar）。"""
     changed = Signal()
@@ -328,6 +397,13 @@ class OpRunner:
         self._run_with_dialog(task, "复制文件" if mode == "copy" else "移动文件")
         return task
 
+    def run_delete(self, paths):
+        task = DeleteTask(paths)
+        if self.queue is not None:
+            self.queue.add(task, "删除到回收站 %d 项" % len(paths))
+        self._run_with_dialog(task, "删除到回收站")
+        return task
+
     def run_zip(self, srcs, zip_path):
         task = ZipTask("compress", srcs, zip_path)
         if self.queue is not None:
@@ -351,6 +427,7 @@ class OpRunner:
         task.sig.progress.connect(dlg.set_progress)
         task.sig.file_done.connect(dlg.add_log)
         task.sig.error.connect(dlg.on_error)
+        task.sig.status.connect(dlg.set_status)
         task.sig.conflict.connect(dlg.on_conflict)
         task.sig.finished.connect(dlg.on_finished)
         task.sig.finished.connect(dlg.close)

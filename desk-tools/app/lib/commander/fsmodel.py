@@ -36,46 +36,6 @@ _ICON_CACHE = {}
 _ICON_CACHE_MAX = 30000
 
 
-def _shell_folder_icon(path):
-    """目录图标：直接问 Shell（SHGetFileInfo），拿真实文件夹图标。
-
-    QFileIconProvider 对部分目录会回退成"电脑/驱动器"样式图标，
-    这里优先用 Shell 原生结果，失败再退回 provider。
-    """
-    if os.name != "nt":
-        return None
-    try:
-        import ctypes
-        from ctypes import wintypes, byref, sizeof
-
-        class SHFILEINFOW(ctypes.Structure):
-            _fields_ = [("hIcon", wintypes.HICON), ("iIcon", ctypes.c_int),
-                        ("dwAttributes", wintypes.DWORD),
-                        ("szDisplayName", wintypes.WCHAR * 260),
-                        ("szTypeName", wintypes.WCHAR * 80)]
-
-        info = SHFILEINFOW()
-        SHGFI_ICON, SHGFI_SMALLICON = 0x100, 0x1
-        res = ctypes.WinDLL("shell32", use_last_error=True).SHGetFileInfoW(
-            str(path), 0, byref(info), sizeof(info), SHGFI_ICON | SHGFI_SMALLICON)
-        if not res or not info.hIcon:
-            return None
-        from PySide6.QtCore import QSize
-        from PySide6.QtGui import QImage
-        if not hasattr(QImage, "fromHICON"):
-            return None
-        img = QImage.fromHICON(info.hIcon)
-        ctypes.windll.user32.DestroyIcon(info.hIcon)
-        if img.isNull():
-            return None
-        ic = QIcon(img)
-        if img.size().width() > 16:
-            ic = QIcon(ic.pixmap(QSize(16, 16)))
-        return ic
-    except Exception:
-        return None
-
-
 def sys_icon(path, is_dir=False):
     """取图标：文件夹用 mac 风格蓝色文件夹；文件用 Windows 原生
     Shell 图标（不同类型/可执行文件各自真实图标，一眼可辨）。

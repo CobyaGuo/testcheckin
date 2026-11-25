@@ -11,6 +11,7 @@ import os
 import shutil
 import subprocess
 import sys
+import threading
 
 from PySide6.QtCore import QSize, Qt, QTimer
 from PySide6.QtGui import QKeySequence, QShortcut
@@ -23,7 +24,7 @@ from . import icons
 
 from . import config
 from .dialogs import BatchRenameDialog, Md5Dialog
-from .operations import OpQueue, OpRunner, delete_to_recycle_bin
+from .operations import OpQueue, OpRunner
 from .pane import (VIEW_DETAIL, VIEW_ICONS, FilePane, FileSystemTree)
 from .queuebar import FavoritesTree, QueueBar
 from .theme import apply_theme
@@ -333,6 +334,8 @@ class MainWindow(QMainWindow):
 
         self.center_split = QSplitter(Qt.Horizontal)
         self.fav_tree.setMaximumWidth(240)
+        # 防止 QSplitter 在面板最小宽度约束下把收藏树压成 40px 窄条
+        self.fav_tree.setMinimumWidth(180)
         self.center_split.addWidget(self.fav_tree)
         self.center_split.addWidget(self.fs_tree)
         self.center_split.addWidget(self.split)
@@ -383,6 +386,17 @@ class MainWindow(QMainWindow):
         self._build_menus()
         self._shortcuts()
         self._restore()
+        self._show_config_warnings()
+
+    def _show_config_warnings(self):
+        """把配置读写/容错告警集中到状态栏，完整内容放 tooltip。"""
+        warns = config.get_warnings()
+        if not warns:
+            return
+        msg = "配置告警（%d）：%s" % (len(warns), "；".join(warns))
+        self.st_label.setText(msg)
+        self.st_label.setToolTip(msg)
+        self.st_label.setStyleSheet("color: #e6a23c;")
 
     def _on_focus_changed(self, _old, now):
         """焦点落在哪个面板内，树/状态栏就跟随哪个面板。"""
@@ -458,6 +472,8 @@ class MainWindow(QMainWindow):
         self.m_fav_list.addAction("将当前目录加入收藏…", self.add_favorite)
         self.m_fav_list.addSeparator()
         for fav in self.cfg.get("favorites", []):
+            if not isinstance(fav, dict) or not fav.get("name") or not fav.get("path"):
+                continue
             self.m_fav_list.addAction("★ " + fav["name"],
                                       lambda p=fav["path"]: self.active_pane().navigate(p))
 
@@ -470,6 +486,8 @@ class MainWindow(QMainWindow):
         from .fsmodel import fav_icon
         from .queuebar import _emoji_icon  # noqa: F401 （保留兼容）
         for fav in self.cfg.get("favorites", []):
+            if not isinstance(fav, dict) or not fav.get("name") or not fav.get("path"):
+                continue
             b = QPushButton(" " + fav["name"])
             b.setFlat(True)
             b.setIcon(fav_icon(fav["name"]))
@@ -535,11 +553,17 @@ class MainWindow(QMainWindow):
             self.showMaximized()
         # 恢复分割条比例（左右栏 / 收藏树-树-面板）
         cs = self.cfg.get("split_sizes")
-        if cs:
+        if isinstance(cs, list) and len(cs) == 3 and all(isinstance(x, int) and x > 0 for x in cs):
             try:
                 self.center_split.setSizes(cs[:3])
             except Exception:
                 pass
+        else:
+            # 首次运行无历史尺寸：记录合理默认值。收藏树默认隐藏，QSplitter
+            # 会在显示时把隐藏 widget 压到极小（约 40px），需在 toggle_fav_tree
+            # 显示时重新应用，见 _ensure_fav_tree_width。
+            total = max(self.center_split.width(), 900)
+            self._default_center_sizes = [180, 220, total - 400]
         ps = self.cfg.get("pane_sizes")
         if ps and len(ps) == 3:
             try:
@@ -679,10 +703,8 @@ class MainWindow(QMainWindow):
         box.exec()
         if box.clickedButton() is not yes:
             return
-        if delete_to_recycle_bin([e.path for e in sel]):
-            pane.refresh()
-        else:
-            QMessageBox.warning(self, "删除失败", "回收站操作失败（非 Windows 或权限不足）。")
+        task = self.op.run_delete([e.path for e in sel])
+        task.sig.finished.connect(lambda *_: pane.refresh())
 
     def rename_selected(self):
         pane = self.active_pane()
@@ -904,10 +926,24 @@ class MainWindow(QMainWindow):
     def add_smart_folder(self):
         self.fav_tree._smart_dialog()
 
+    def _ensure_fav_tree_width(self):
+        """收藏树从隐藏转为显示时，QSplitter 会把它压到极小，需要显式给宽。"""
+        sizes = self.center_split.sizes()
+        if sizes and sizes[0] >= 150:
+            return
+        total = max(sum(sizes), self.center_split.width(), 900)
+        # 左树受 maximumWidth(240) 限制，按当前窗口宽度动态分配，
+        # 不能用固定总和（窗口远宽于默认值时会被 QSplitter 重新拉伸）。
+        self.center_split.setSizes([180, 220, max(400, total - 400)])
+
     def toggle_fav_tree(self):
         vis = not self.fav_tree.isVisible()
         self.fav_tree.setVisible(vis)
         self.cfg["fav_tree"] = vis
+        if vis:
+            # setVisible 后布局尚未刷新，此时 setSizes 会被 QSplitter 重算覆盖；
+            # 延后到下一事件循环再应用默认宽度。
+            QTimer.singleShot(0, self._ensure_fav_tree_width)
 
     def toggle_quick_viewer(self):
         vis = not self.quick_viewer.isVisible()
@@ -968,8 +1004,8 @@ class MainWindow(QMainWindow):
         from PySide6.QtWidgets import QMenu
         from PySide6.QtGui import QCursor
         m = QMenu(self)
-        m.addAction("水平 / 垂直排列 (Ctrl+H)", self.toggle_orientation)
-        m.addAction("单 / 双栏 (F10)", self.toggle_layout)
+        m.addAction("水平 / 垂直排列", self.toggle_orientation)
+        m.addAction("单 / 双栏 (Ctrl+H / F10)", self.toggle_layout)
         m.addSeparator()
         m.addAction("对侧打开同一目录 (Ctrl+E)", self.same_folder)
         m.addAction("交换两侧目录 (Ctrl+U)", self.swap_panes)
@@ -1146,6 +1182,30 @@ class MainWindow(QMainWindow):
             self.st_label.setText("就绪")
 
     _free_cache = {}   # 盘符 -> (时间戳, 文本)，disk_usage 对网络盘可能很慢，60s 缓存
+    _free_pending = set()
+
+    def _request_disk_usage(self, key, path):
+        """缓存未命中时后台取磁盘余量，避免网络盘首次调用冻结 UI。"""
+        if key in self._free_pending:
+            return
+        self._free_pending.add(key)
+
+        def work():
+            try:
+                import shutil as _sh
+                import time as _time
+                free = "    磁盘剩余 %.1f GB" % (_sh.disk_usage(path).free / 1073741824.0)
+                self._free_cache[key] = (_time.time(), free)
+            except OSError:
+                pass
+            finally:
+                self._free_pending.discard(key)
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _refresh_free_label(self):
+        """磁盘余量后台就绪后刷新状态栏（不改变数量/选中信息）。"""
+        self.update_status()
 
     def update_status(self):
         pane = self.active_pane()
@@ -1161,16 +1221,13 @@ class MainWindow(QMainWindow):
         size = sum(e.size for e in sel if not e.is_dir)
         free = ""
         try:
-            import shutil as _sh
             import time as _time
             key = os.path.splitdrive(os.path.abspath(pane.model.path or os.getcwd()))[0].upper()
             cached = self._free_cache.get(key)
             if cached and _time.time() - cached[0] < 60:
                 free = cached[1]
             else:
-                fu = _sh.disk_usage(pane.model.path or os.getcwd()).free
-                free = "    磁盘剩余 %.1f GB" % (fu / 1073741824.0)
-                self._free_cache[key] = (_time.time(), free)
+                self._request_disk_usage(key, pane.model.path or os.getcwd())
         except OSError:
             pass
         self.st_count.setText("%d 项    选中 %d 项（%.1f MB）%s"
