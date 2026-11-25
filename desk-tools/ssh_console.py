@@ -2823,6 +2823,14 @@ def main():
             ctypes.windll.kernel32.FreeConsole()
         except Exception:
             pass
+        # 任务栏按钮默认显示 python.exe 自带图标；必须给进程显式注册
+        # AppUserModelID，下方 setWindowIcon 设置的图标才会被任务栏采用。
+        try:
+            import ctypes
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
+                "cobyg.desktools.sshconsole")
+        except Exception:
+            pass
     app = QApplication(sys.argv)
     app.setFont(QFont(UI_FONT, 9))
     app.setWindowIcon(make_app_icon())
