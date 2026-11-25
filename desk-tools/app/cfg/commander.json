@@ -1,0 +1,69 @@
+{
+  "favorites": [
+    {
+      "name": "桌面",
+      "path": "C:\\Users\\cobyg/Desktop"
+    },
+    {
+      "name": "下载",
+      "path": "C:\\Users\\cobyg/Downloads"
+    },
+    {
+      "name": "文档",
+      "path": "C:\\Users\\cobyg/Documents"
+    },
+    {
+      "name": "logs",
+      "path": "C:\\Users\\cobyg\\.sheetagent\\logs"
+    }
+  ],
+  "panes": [
+    {
+      "tabs": [
+        {
+          "path": "C:\\Users\\cobyg",
+          "title": "",
+          "color": ""
+        },
+        {
+          "path": "D:\\AIAgent\\pytool\\desk-tools",
+          "title": "",
+          "color": "#3b82f6"
+        }
+      ]
+    },
+    {
+      "tabs": [
+        {
+          "path": "D:\\BaiduNetdiskDownload",
+          "title": "",
+          "color": ""
+        }
+      ]
+    }
+  ],
+  "active_pane": 0,
+  "show_hidden": false,
+  "single_pane": false,
+  "window": {
+    "w": 1536,
+    "h": 890,
+    "maximized": true
+  },
+  "view_mode": "detail",
+  "theme": "dark",
+  "fs_tree": true,
+  "fav_tree": true,
+  "file_tags": {},
+  "split_sizes": [
+    142,
+    258,
+    1134
+  ],
+  "pane_sizes": [
+    544,
+    44,
+    544
+  ],
+  "smart_folders": []
+}

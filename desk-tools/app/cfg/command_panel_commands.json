@@ -1,5 +1,6 @@
 {
   "version": 1,
+  "skipTimeout": false,
   "commands": [
     {
       "id": "b01",
@@ -61,6 +62,33 @@
       "cwd": "",
       "timeoutSec": 30,
       "parallel": "允许"
+    },
+    {
+      "id": "b06",
+      "alias": "信息",
+      "type": "shell",
+      "body": "",
+      "tags": [
+        "信息"
+      ],
+      "note": "",
+      "cwd": "",
+      "timeoutSec": 30,
+      "parallel": "允许"
+    },
+    {
+      "id": "b07",
+      "alias": "存储",
+      "type": "shell",
+      "body": "",
+      "tags": [
+        "存储"
+      ],
+      "note": "",
+      "cwd": "",
+      "timeoutSec": 30,
+      "parallel": "允许"
     }
-  ]
+  ],
+  "usage": {}
 }

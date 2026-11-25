@@ -174,8 +174,8 @@ from pathlib import Path
 
 from PySide6.QtCore import (QProcess, QProcessEnvironment, QRegularExpression,
                             QSize, Qt, QTimer, Signal)
-from PySide6.QtGui import (QColor, QFont, QFontDatabase, QSyntaxHighlighter,
-                           QTextCharFormat, QTextCursor)
+from PySide6.QtGui import (QColor, QFont, QFontDatabase, QKeySequence, QShortcut,
+                           QSyntaxHighlighter, QTextCharFormat, QTextCursor)
 from PySide6.QtWidgets import (
     QAbstractItemView, QApplication, QButtonGroup, QCheckBox, QDialog, QFrame,
     QGraphicsDropShadowEffect, QGridLayout, QGroupBox, QHBoxLayout, QInputDialog,
@@ -185,11 +185,11 @@ from PySide6.QtWidgets import (
 )
 
 _SCRIPT_PATH = Path(__file__).resolve()
-CFG_DIR = _SCRIPT_PATH.parent / "cfg"
+CFG_DIR = _SCRIPT_PATH.parent / "app" / "cfg"
 CONFIG_PATH = CFG_DIR / "command_panel_commands.json"
 LEGACY_CONFIG_PATH = _SCRIPT_PATH.parent / "commands.json"
 # 日志按脚本文件名走：复制成 backup_panel.py 后自动写 logs/backup_panel.log，多副本互不混淆。
-LOG_DIR = _SCRIPT_PATH.parent / "logs"
+LOG_DIR = _SCRIPT_PATH.parent / "app" / "logs"
 LOG_PATH = LOG_DIR / (_SCRIPT_PATH.stem + ".log")
 LOG_MAX_BYTES = 10 * 1024 * 1024     # 超过 10MB 轮转为 .log.old（覆盖旧文件）
 TYPES = ("shell", "cmd", "python")
@@ -197,6 +197,11 @@ PARALLEL_MODES = ("允许", "互斥")
 OUTPUT_LIMIT = 1024 * 1024          # 单次运行输出缓冲上限 ~1MB，超过即截断
 HISTORY_LIMIT = 60                  # 全局执行记录保留条数
 RECORD_UI_LIMIT = 10                # 界面最多展示的执行记录条数，更早的只看日志
+TAG_ROWS_COLLAPSED = 3              # 侧栏标签区默认最多显示三行，超出滚动
+TAG_ROWS_EXPANDED = 8               # 手动展开后最多显示八行，仍可滚动
+# 虚拟筛选页的内部标识（不可能与真实标签同名），只作为筛选状态，不写入配置
+VIEW_FREQUENT = "\x00frequent"
+VIEW_RECENT = "\x00recent"
 
 # ---------------------------------------------------------------------------
 # 所有视觉样式集中在此唯一 QSS 常量；其余代码不再调用 setStyleSheet。
@@ -243,6 +248,10 @@ QLabel#alias { color: #f2f4fa; font-size: 12px; font-weight: 600; }
 QLabel#muted { color: #6f7788; font-size: 10px; }
 QLabel#sh3 { color: #6f7788; font-size: 9.5px; font-weight: 700; }
 QLabel#cap { color: #6f7788; font-size: 10px; font-weight: 600; }
+/* 与 ssh_console.py 的 quickLabel 同一套小号灰色分组标题 */
+QLabel#quickLabel { color: #7d8598; font-size: 10px; font-weight: 700; letter-spacing: 1px; }
+/* 标签统计里只有一条命令使用的碎标签：弱化提示，不做任何编辑入口 */
+QLabel#tagWeak { color: #5b6270; font-size: 9.5px; }
 QLabel#field { color: #8b93a5; font-size: 10.5px; }
 QLabel#statNum { color: #e8eaf0; font-size: 18px; font-weight: 600; }
 QLabel#note {
@@ -363,21 +372,22 @@ def default_commands():
 
 
 def load_config(path):
-    """返回 (commands, warnings, settings)。字段缺失/损坏逐字段回退默认值，绝不抛异常给界面。
+    """返回 (commands, warnings, settings, usage)。字段缺失/损坏逐字段回退默认值，绝不抛异常给界面。
 
     settings 为全局设置：skipTimeout=True 时所有命令忽略各自超时，不限时运行。
+    usage 为持久化的执行统计 {cmd_id: {count, last_ts}}；旧配置无此字段时按空处理。
     """
     warnings = []
     fallback = default_commands()
     default_settings = {"skipTimeout": False}
     if not path.exists():
-        return fallback, warnings, dict(default_settings)
+        return fallback, warnings, dict(default_settings), {}
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
     except Exception as exc:
-        return fallback, ["JSON 解析失败：%s（已回退默认配置）" % exc], dict(default_settings)
+        return fallback, ["JSON 解析失败：%s（已回退默认配置）" % exc], dict(default_settings), {}
     if not isinstance(raw, dict):
-        return fallback, ["根节点不是对象（已回退默认配置）"], dict(default_settings)
+        return fallback, ["根节点不是对象（已回退默认配置）"], dict(default_settings), {}
 
     settings = dict(default_settings)
     skip_raw = raw.get("skipTimeout", False)
@@ -466,14 +476,14 @@ def load_config(path):
             warnings.append("%s.timeoutSec 缺失→30（0/留空为不限时）" % where)
             timeout = 30
         else:
-            raw = item["timeoutSec"]
-            if raw is None or (isinstance(raw, str) and not raw.strip()):
+            timeout_raw = item["timeoutSec"]
+            if timeout_raw is None or (isinstance(timeout_raw, str) and not timeout_raw.strip()):
                 timeout = 0
             else:
                 try:
-                    if isinstance(raw, bool):
+                    if isinstance(timeout_raw, bool):
                         raise ValueError
-                    timeout = int(raw)
+                    timeout = int(timeout_raw)
                     if timeout < 0:
                         raise ValueError
                 except (TypeError, ValueError):
@@ -488,13 +498,34 @@ def load_config(path):
         cmd["parallel"] = parallel
 
         out.append(cmd)
-    return out, warnings, settings
+
+    # usage 向后兼容：旧配置没有该字段时按空字典处理；单条损坏只跳过该条。
+    usage = {}
+    usage_raw = raw.get("usage", {})
+    if isinstance(usage_raw, dict):
+        for cid, entry in usage_raw.items():
+            if not isinstance(cid, str) or not isinstance(entry, dict):
+                continue
+            try:
+                count_raw, ts_raw = entry.get("count", 0), entry.get("last_ts", 0)
+                if isinstance(count_raw, bool) or isinstance(ts_raw, bool):
+                    raise ValueError
+                count, last_ts = int(count_raw), float(ts_raw)
+            except (TypeError, ValueError):
+                continue
+            if count <= 0 or last_ts < 0:
+                continue
+            usage[cid] = {"count": count, "last_ts": last_ts}
+    elif "usage" in raw:
+        warnings.append("usage 无效→{}")
+    return out, warnings, settings, usage
 
 
-def save_config(path, commands, settings=None):
+def save_config(path, commands, settings=None, usage=None):
     """原子写：同目录临时文件 → fsync → os.replace，返回 None 表示成功。"""
     skip = bool(settings.get("skipTimeout")) if isinstance(settings, dict) else False
-    data = {"version": 1, "skipTimeout": skip, "commands": commands}
+    data = {"version": 1, "skipTimeout": skip, "commands": commands,
+            "usage": usage if isinstance(usage, dict) else {}}
     tmp = None
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -738,7 +769,11 @@ class CommandCard(QFrame):
         self.edit_btn.setVisible(False)
         self.edit_btn.clicked.connect(lambda: self.edit_clicked.emit(self.cmd_id))
         hbox.addWidget(self.edit_btn)
+        self.run_badge = QLabel("")
+        self.run_badge.setProperty("role", "tag")
+        self.run_badge.setVisible(False)
         head.addWidget(self.alias_label, 1)
+        head.addWidget(self.run_badge)
         head.addWidget(self.dot)
         head.addWidget(holder)
         self.summary = QLabel(cmd["type"])
@@ -762,6 +797,11 @@ class CommandCard(QFrame):
     def set_selected(self, selected):
         self.setProperty("selected", "true" if selected else "false")
         refresh_style(self)
+
+    def set_badge(self, text):
+        """虚拟分组的运行角标：常用显示次数，最近显示最后执行时间。"""
+        self.run_badge.setText(text)
+        self.run_badge.setVisible(bool(text))
 
     def update_content(self, cmd, summary, running):
         self.alias_label.setText(cmd["alias"])
@@ -1207,8 +1247,46 @@ class CodeHighlighter(QSyntaxHighlighter):
                 self.setFormat(i, 1, fmt)
 
 
+class TagStatsDialog(QDialog):
+    """侧栏「标签统计」入口：只读统计，不提供任何批量改标签操作。"""
+
+    def __init__(self, parent, stats):
+        super().__init__(parent)
+        self.setModal(True)
+        self.setWindowTitle("标签统计")
+        self.resize(380, 340)
+        root = QVBoxLayout(self)
+        root.setContentsMargins(16, 14, 16, 14)
+        root.setSpacing(8)
+        caption = QLabel("按命令数降序 · 弱化显示的是只有一条命令使用的标签")
+        caption.setObjectName("muted")
+        caption.setWordWrap(True)
+        root.addWidget(caption)
+        grid = QGridLayout()
+        grid.setContentsMargins(4, 4, 4, 4)
+        grid.setSpacing(6)
+        if stats:
+            for idx, (tag, count) in enumerate(stats):
+                label = QLabel("%s · %d 条" % (tag, count))
+                if count <= 1:
+                    label.setObjectName("tagWeak")
+                    label.setToolTip("仅 1 条命令使用，标签切得过碎")
+                grid.addWidget(label, idx // 2, idx % 2)
+        else:
+            empty = QLabel("暂无标签")
+            empty.setObjectName("muted")
+            grid.addWidget(empty, 0, 0)
+        root.addLayout(grid)
+        root.addStretch(1)
+        close_btn = QPushButton("关闭")
+        close_btn.setProperty("role", "link")
+        close_btn.setCursor(Qt.PointingHandCursor)
+        close_btn.clicked.connect(self.accept)
+        root.addWidget(close_btn, 0, Qt.AlignRight)
+
+
 class CommandDialog(QDialog):
-    def __init__(self, parent, command, all_tags, is_new=False):
+    def __init__(self, parent, command, all_tags, is_new=False, tag_stats=None):
         super().__init__(parent)
         self.command = dict(command)
         self.is_new = is_new
@@ -1301,6 +1379,25 @@ class CommandDialog(QDialog):
         new_tag_row.addWidget(new_tag_btn)
         tags_layout.addLayout(new_tag_row)
         root.addWidget(tags_box)
+
+        # 标签统计：纯展示，不提供批量改标签入口，避免误操作。
+        stats_box = QGroupBox("标签统计")
+        stats_box.setToolTip("按命令数降序；弱化显示的是只有一条命令使用的标签")
+        stats_grid = QGridLayout(stats_box)
+        stats_grid.setContentsMargins(8, 8, 8, 8)
+        stats_grid.setSpacing(4)
+        if tag_stats:
+            for idx, (tag, count) in enumerate(tag_stats):
+                label = QLabel("%s · %d 条" % (tag, count))
+                if count <= 1:
+                    label.setObjectName("tagWeak")
+                    label.setToolTip("仅 1 条命令使用，标签切得过碎")
+                stats_grid.addWidget(label, idx // 3, idx % 3)
+        else:
+            empty = QLabel("暂无标签")
+            empty.setObjectName("muted")
+            stats_grid.addWidget(empty, 0, 0)
+        root.addWidget(stats_box)
 
         self.note_edit = QPlainTextEdit(command["note"])
         self.note_edit.setMinimumHeight(56)
@@ -1424,8 +1521,9 @@ class CommandPanel(QMainWindow):
         self.setStatusBar(self.status_bar)
 
         migration_note = migrate_config()
-        self.commands, warnings, settings = load_config(CONFIG_PATH)
+        self.commands, warnings, settings, self.usage = load_config(CONFIG_PATH)
         self.skip_timeout = settings["skipTimeout"]   # 全局跳过超时开关（侧栏可切换）
+        self.all_cards = []         # 当前列表里的全部卡片（含虚拟分组，可能重复引用同一命令）
         self.active_by_id = {}      # cmd_id -> set(RunState)，同一命令允许多实例（允许模式）
         self.records = []           # 最新在前
         self.record_seq = 0
@@ -1433,11 +1531,13 @@ class CommandPanel(QMainWindow):
         self.selected_id = None
         self.active_tag = None
         self.search_text = ""
-        self.card_widgets = {}
         self.item_ids = {}
+        self.tag_expanded = False   # 标签区展开/收起（仅影响显示高度，不改变筛选）
+        self._tag_entries = []      # 标签 pill 的纯数据，供宽度变化时重排
 
         self._build_ui()
         self._refresh_all()
+        QTimer.singleShot(0, self._focus_search)   # 启动即聚焦搜索框
         if warnings:
             preview = "；".join(warnings[:2]) + ("…" if len(warnings) > 2 else "")
             self._status("配置容错加载：%d 处回退（%s）" % (len(warnings), preview), 15000)
@@ -1508,6 +1608,11 @@ class CommandPanel(QMainWindow):
         splitter.setStretchFactor(0, 0)
         splitter.setStretchFactor(1, 1)
         outer.addWidget(splitter, 1)
+        # 拖动分隔条改变侧栏宽度后，防抖重排标签 pill
+        self._tag_relayout_timer = QTimer(self)
+        self._tag_relayout_timer.setSingleShot(True)
+        self._tag_relayout_timer.timeout.connect(self._layout_tag_pills)
+        splitter.splitterMoved.connect(lambda: self._tag_relayout_timer.start(80))
 
         # ---- 左栏 ----
         sidebar = QFrame()
@@ -1518,19 +1623,49 @@ class CommandPanel(QMainWindow):
 
         self.search = QLineEdit()
         self.search.setObjectName("search")
-        self.search.setPlaceholderText("🔍 搜索命令（别名 / 备注）…")
+        self.search.setPlaceholderText("搜索命令…")
+        self.search.setToolTip("搜索别名 / 命令体 / 标签 / 备注；空格分隔多个关键词，需全部命中\nCtrl+F 聚焦，Esc 清空")
         self.search.textChanged.connect(self._on_search)
+        self.find_shortcut = QShortcut(QKeySequence("Ctrl+F"), self)
+        self.find_shortcut.activated.connect(self._focus_search)
+        self.clear_shortcut = QShortcut(QKeySequence("Esc"), self)
+        self.clear_shortcut.activated.connect(self._clear_search)
         side_layout.addWidget(self.search)
 
+        tag_head = QHBoxLayout()
         tag_caption = QLabel("标签")
         tag_caption.setObjectName("sh3")
-        side_layout.addWidget(tag_caption)
+        tag_stats_btn = QPushButton("标签统计")
+        tag_stats_btn.setProperty("role", "link")
+        tag_stats_btn.setCursor(Qt.PointingHandCursor)
+        tag_stats_btn.setToolTip("查看各标签的命令数（只读）")
+        tag_stats_btn.clicked.connect(self._show_tag_stats)
+        self.tag_expand_btn = QPushButton("▾ 展开")
+        self.tag_expand_btn.setProperty("role", "link")
+        self.tag_expand_btn.setCursor(Qt.PointingHandCursor)
+        self.tag_expand_btn.setToolTip("展开/收起标签区；标签过多时可在区内滚动")
+        self.tag_expand_btn.clicked.connect(self._toggle_tag_area)
+        self.tag_expand_btn.hide()
+        tag_head.addWidget(tag_caption)
+        tag_head.addStretch(1)
+        tag_head.addWidget(self.tag_expand_btn)
+        tag_head.addWidget(tag_stats_btn)
+        side_layout.addLayout(tag_head)
+        # 标签区限高：默认三行、最多八行，超出在区内滚动，命令列表不再被挤成一条缝
+        self.tag_scroll = QScrollArea()
+        self.tag_scroll.setObjectName("tagScroll")
+        self.tag_scroll.setFrameShape(QFrame.NoFrame)
+        self.tag_scroll.setWidgetResizable(True)
+        self.tag_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.tag_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         tag_host = QWidget()
-        self.tag_layout = QHBoxLayout(tag_host)
+        self.tag_host = tag_host
+        self.tag_layout = QGridLayout(tag_host)   # 自动换行：pill 按侧栏宽度重排
         self.tag_layout.setContentsMargins(0, 0, 0, 0)
-        self.tag_layout.setSpacing(7)
-        self.tag_layout.addStretch(1)
-        side_layout.addWidget(tag_host)
+        self.tag_layout.setHorizontalSpacing(7)
+        self.tag_layout.setVerticalSpacing(5)
+        self.tag_scroll.setWidget(tag_host)
+        side_layout.addWidget(self.tag_scroll)
 
         cmd_caption = QLabel("命令")
         cmd_caption.setObjectName("sh3")
@@ -1682,26 +1817,75 @@ class CommandPanel(QMainWindow):
             tags.update(cmd["tags"])
         return tags
 
+    def _tag_stats(self):
+        """标签 → 命令数，按数量降序（同数按名称），供编辑弹层纯展示。"""
+        counts = {}
+        for cmd in self.commands:
+            for tag in cmd["tags"]:
+                counts[tag] = counts.get(tag, 0) + 1
+        return sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+
+    def _show_tag_stats(self):
+        TagStatsDialog(self, self._tag_stats()).exec()
+
+    def _bump_usage(self, cid):
+        """正常结束时累计次数并刷新时间戳；与 HISTORY_LIMIT 内存窗口互不混用。"""
+        old = self.usage.get(cid)
+        count = old.get("count", 0) + 1 if isinstance(old, dict) else 1
+        self.usage[cid] = {"count": count, "last_ts": datetime.now().timestamp()}
+
     def is_running(self, cid):
         return bool(self.active_by_id.get(cid))
 
     def _running_count(self):
         return sum(len(states) for states in self.active_by_id.values())
 
-    def _filtered_commands(self):
-        q = self.search_text.strip().lower()
-        result = []
-        for cmd in self.commands:
-            if self.active_tag is not None and self.active_tag not in cmd["tags"]:
-                continue
-            if q and q not in cmd["alias"].lower() and q not in cmd["note"].lower():
-                continue
-            result.append(cmd)
-        return result
+    def _focus_search(self):
+        self.search.setFocus()
+        self.search.selectAll()
+
+    def _clear_search(self):
+        if self.search.text():
+            self.search.clear()          # textChanged 会触发列表与标签行还原
+        self.cmd_list.setFocus()
+
+    @staticmethod
+    def _search_keywords(text=""):
+        return [word.lower() for word in text.split() if word]
+
+    def _search_words(self):
+        return self._search_keywords(self.search_text)
+
+    @staticmethod
+    def _matches_search(cmd, words):
+        """多关键词 AND；匹配别名、命令体、标签、备注，不区分大小写。"""
+        if not words:
+            return True
+        haystack = " ".join((
+            cmd.get("alias", ""), cmd.get("body", ""),
+            " ".join(cmd.get("tags", ())), cmd.get("note", ""),
+        )).lower()
+        return all(word in haystack for word in words)
+
+    def _filtered_commands(self, words=None):
+        if words is None:
+            words = self._search_words()
+        if words:
+            # 搜索激活时忽略标签与虚拟页筛选，只显示匹配结果平铺列表
+            return [c for c in self.commands if self._matches_search(c, words)]
+        if self.active_tag in (VIEW_FREQUENT, VIEW_RECENT):
+            # 虚拟页按 usage 排好序返回，不写入配置、不混进普通标签
+            ids = (self._frequent_ids() if self.active_tag == VIEW_FREQUENT
+                   else self._recent_ids())
+            return [cmd for cid in ids if (cmd := self._find_command(cid)) is not None]
+        return [c for c in self.commands
+                if self.active_tag is None or self.active_tag in c["tags"]]
 
     def _on_search(self, text):
         self.search_text = text
-        self._refresh_left()
+        words = self._search_words()
+        self._refresh_tag_pills(words)
+        self._refresh_left(words)
 
     def _on_item_pressed(self, item):
         cid = self.item_ids.get(id(item))
@@ -1709,34 +1893,111 @@ class CommandPanel(QMainWindow):
             self.select_command(cid)
 
     def _refresh_all(self):
-        self._refresh_tag_pills()
-        self._refresh_left()
+        words = self._search_words()
+        self._refresh_tag_pills(words)
+        self._refresh_left(words)
         self._refresh_detail()
         self._refresh_stats()
         self._refresh_records_view()
 
-    def _refresh_tag_pills(self):
+    def _refresh_tag_pills(self, words=None):
+        if words is None:
+            words = self._search_words()
         clear_layout(self.tag_layout)
-        self.tag_layout.addStretch(1)
-        tags = ["全部"] + sorted(self._all_tags())
-        for tag in tags:
-            count = len(self.commands) if tag == "全部" else sum(1 for c in self.commands if tag in c["tags"])
-            running = (self._running_count() > 0) if tag == "全部" else any(
-                self.is_running(c["id"]) for c in self.commands if tag in c["tags"]
-            )
-            active = self.active_tag is None if tag == "全部" else self.active_tag == tag
-            pill = TagPill(tag, count, running, active)
-            pill.setCursor(Qt.PointingHandCursor)
-            pill.clicked.connect(lambda checked=False, t=tag: self._on_tag_clicked(t))
-            self.tag_layout.addWidget(pill)
-        add_pill = TagPill("＋新建", None, False, False)
-        add_pill.setCursor(Qt.PointingHandCursor)
-        add_pill.setToolTip("新建标签（保存命令后写入 commands.json）")
-        add_pill.clicked.connect(self._on_new_tag)
-        self.tag_layout.addWidget(add_pill)
+        if words:
+            self._tag_entries = []
+            self.tag_expand_btn.hide()
+            self.tag_host.setMinimumHeight(0)   # 否则上次的标签高度会让搜索结果行也出现滚动条
+            result = QLabel("搜索结果 %d 条" % len(self._filtered_commands(words)))
+            result.setObjectName("quickLabel")
+            self.tag_layout.addWidget(result, 0, 0)
+            h = result.sizeHint().height() + 4
+            self.tag_scroll.setMinimumHeight(h)
+            self.tag_scroll.setMaximumHeight(h)
+            return
+        # 前三个是虚拟筛选页：与标签 pill 同款交互，但只是 usage 视图，不写入配置
+        entries = []
+        for label, key, tip in [("全部", None, "所有命令"),
+                                ("常用", VIEW_FREQUENT, "按执行次数排序的前 8 条（次数 >1 才计入）"),
+                                ("最近", VIEW_RECENT, "按最后执行时间排序的前 5 条")]:
+            if key is None:
+                count, running = len(self.commands), self._running_count() > 0
+            else:
+                ids = self._frequent_ids() if key == VIEW_FREQUENT else self._recent_ids()
+                count, running = len(ids), any(self.is_running(cid) for cid in ids)
+            entries.append((label, key, tip, count, running))
+        for tag in sorted(self._all_tags()):
+            cmds = [c for c in self.commands if tag in c["tags"]]
+            entries.append((tag, tag, "标签：%s" % tag,
+                            len(cmds), any(self.is_running(c["id"]) for c in cmds)))
+        self._tag_entries = entries
+        self._layout_tag_pills()
 
-    def _on_tag_clicked(self, tag):
-        self.active_tag = None if tag == "全部" else tag
+    def _layout_tag_pills(self):
+        """按当前侧栏宽度重排 pill，并把标签区高度限制在三行/八行内。"""
+        entries = self._tag_entries
+        if not entries:
+            return
+        # 两遍排版：滚动条出现会让视口变窄，第二遍预留滚动条宽度重排，避免末尾 pill 被裁掉。
+        reserve = 0
+        for _ in range(2):
+            avail = max(self.tag_scroll.viewport().width() - reserve, 240)
+            clear_layout(self.tag_layout)
+            pills = []
+            for label, key, tip, count, running in entries:
+                pill = TagPill(label, count, running, self.active_tag == key)
+                pill.setCursor(Qt.PointingHandCursor)
+                pill.setToolTip(tip)
+                pill.clicked.connect(lambda checked=False, k=key: self._on_tag_clicked(k))
+                pills.append(pill)
+            add_pill = TagPill("＋新建", None, False, False)
+            add_pill.setCursor(Qt.PointingHandCursor)
+            add_pill.setToolTip("新建标签（保存命令后写入 commands.json）")
+            add_pill.clicked.connect(self._on_new_tag)
+            pills.append(add_pill)
+
+            gap_x = self.tag_layout.horizontalSpacing()
+            gap_y = self.tag_layout.verticalSpacing()
+            pill_w = max(p.sizeHint().width() for p in pills)
+            cols = max(1, min(len(pills), (avail + gap_x) // (pill_w + gap_x)))
+            for idx, pill in enumerate(pills):
+                self.tag_layout.addWidget(pill, idx // cols, idx % cols)
+            rows = (len(pills) + cols - 1) // cols
+            pill_h = max(p.sizeHint().height() for p in pills)
+            # 宿主最小高度撑开内容，滚动区限高后自然出现纵向滚动条
+            # （清布局后 sizeHint 会暂时失效，所以按行数算高度）
+            host_h = rows * pill_h + (rows - 1) * gap_y + 4
+            self.tag_host.setMinimumHeight(host_h)
+            limit = TAG_ROWS_EXPANDED if self.tag_expanded else TAG_ROWS_COLLAPSED
+            visible = min(rows, limit)
+            overflow = rows > visible
+            h = visible * pill_h + (visible - 1) * gap_y + 4
+            self.tag_scroll.setMinimumHeight(h)
+            self.tag_scroll.setMaximumHeight(h)
+            new_reserve = 8 if overflow else 0
+            if new_reserve == reserve:
+                break
+            reserve = new_reserve
+        overflow = rows > TAG_ROWS_COLLAPSED
+        self.tag_expand_btn.setVisible(overflow)
+        self.tag_expand_btn.setText("▴ 收起" if self.tag_expanded else "▾ 展开")
+
+    def _toggle_tag_area(self):
+        self.tag_expanded = not self.tag_expanded
+        self._layout_tag_pills()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if getattr(self, "tag_layout", None) is not None and self._tag_entries:
+            self._layout_tag_pills()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        if getattr(self, "tag_layout", None) is not None and self._tag_entries:
+            self._layout_tag_pills()
+
+    def _on_tag_clicked(self, key):
+        self.active_tag = key
         self._refresh_tag_pills()
         self._refresh_left()
 
@@ -1746,7 +2007,62 @@ class CommandPanel(QMainWindow):
             return
         self.open_edit_dialog(None, preset_tag=name.strip())
 
-    def _refresh_left(self):
+    # ---------------- 虚拟分组（基于持久化 usage，不写入命令配置） ----------------
+    def _frequent_ids(self):
+        """执行次数 >1 的命令按次数降序取前 8；并列时最近执行的在前。"""
+        items = [(cid, e) for cid, e in self.usage.items()
+                 if e.get("count", 0) > 1 and self._find_command(cid) is not None]
+        items.sort(key=lambda pair: (-pair[1].get("count", 0), -pair[1].get("last_ts", 0)))
+        return [cid for cid, _ in items[:8]]
+
+    def _recent_ids(self):
+        """有执行时间的命令按 last_ts 降序取前 5。"""
+        items = [(cid, e) for cid, e in self.usage.items()
+                 if e.get("last_ts", 0) > 0 and self._find_command(cid) is not None]
+        items.sort(key=lambda pair: -pair[1].get("last_ts", 0))
+        return [cid for cid, _ in items[:5]]
+
+    @staticmethod
+    def _time_badge(ts):
+        try:
+            moment = datetime.fromtimestamp(ts)
+        except (ValueError, OSError, OverflowError):
+            return ""
+        return (moment.strftime("%H:%M") if moment.date() == datetime.now().date()
+                else moment.strftime("%m-%d %H:%M"))
+
+    def _append_hint(self, text):
+        item = QListWidgetItem()
+        item.setFlags(item.flags() & ~Qt.ItemIsSelectable)
+        item.setSizeHint(QSize(10, 20))
+        label = QLabel(text)
+        label.setObjectName("muted")
+        self.cmd_list.addItem(item)
+        self.cmd_list.setItemWidget(item, label)
+
+    def _append_card(self, cmd, badge_text=""):
+        result = self.last_result.get(cmd["id"], {})
+        summary = "上次 " + result.get("text", "未运行")
+        if result.get("elapsed") is not None:
+            summary += " · " + fmt_elapsed(result["elapsed"])
+        card = CommandCard(cmd)
+        card.update_content(cmd, summary, self.is_running(cmd["id"]))
+        card.set_badge(badge_text)
+        card.set_selected(cmd["id"] == self.selected_id)
+        card.clicked.connect(self.select_command)
+        card.edit_clicked.connect(self.open_edit_dialog)
+        item = QListWidgetItem()
+        item.setSizeHint(QSize(10, 58))
+        self.cmd_list.addItem(item)
+        self.cmd_list.setItemWidget(item, card)
+        self.all_cards.append(card)
+        self.item_ids[id(item)] = cmd["id"]
+        if cmd["id"] == self.selected_id:
+            self.cmd_list.setCurrentItem(item)
+
+    def _refresh_left(self, words=None):
+        if words is None:
+            words = self._search_words()
         pos = self.cmd_list.verticalScrollBar().value()
         for i in range(self.cmd_list.count()):
             widget = self.cmd_list.itemWidget(self.cmd_list.item(i))
@@ -1757,34 +2073,30 @@ class CommandPanel(QMainWindow):
                 widget.setParent(self.cmd_list.viewport())
                 widget.deleteLater()
         self.cmd_list.clear()
-        self.card_widgets.clear()
         self.item_ids.clear()
-        for cmd in self._filtered_commands():
-            result = self.last_result.get(cmd["id"], {})
-            summary = "上次 " + result.get("text", "未运行")
-            if result.get("elapsed") is not None:
-                summary += " · " + fmt_elapsed(result["elapsed"])
-            card = CommandCard(cmd)
-            card.update_content(cmd, summary, self.is_running(cmd["id"]))
-            card.set_selected(cmd["id"] == self.selected_id)
-            card.clicked.connect(self.select_command)
-            card.edit_clicked.connect(self.open_edit_dialog)
-            item = QListWidgetItem()
-            item.setSizeHint(QSize(10, 58))
-            self.cmd_list.addItem(item)
-            self.cmd_list.setItemWidget(item, card)
-            self.card_widgets[cmd["id"]] = card
-            self.item_ids[id(item)] = cmd["id"]
-            if cmd["id"] == self.selected_id:
-                self.cmd_list.setCurrentItem(item)
+        self.all_cards = []
+        virtual = not words and self.active_tag in (VIEW_FREQUENT, VIEW_RECENT)
+        if virtual:
+            ids = (self._frequent_ids() if self.active_tag == VIEW_FREQUENT
+                   else self._recent_ids())
+            if not ids:
+                self._append_hint("运行 2 次以上后自动出现" if self.active_tag == VIEW_FREQUENT
+                                  else "暂无执行记录")
+        for cmd in self._filtered_commands(words):
+            badge = ""
+            if virtual:
+                entry = self.usage.get(cmd["id"], {})
+                badge = ("×%d 次" % entry.get("count", 0) if self.active_tag == VIEW_FREQUENT
+                         else self._time_badge(entry.get("last_ts", 0)))
+            self._append_card(cmd, badge)
         self.cmd_list.verticalScrollBar().setValue(pos)
 
     def select_command(self, cid):
         if self.selected_id == cid:
             return
         self.selected_id = cid
-        for key, card in self.card_widgets.items():
-            card.set_selected(key == cid)
+        for card in self.all_cards:
+            card.set_selected(card.cmd_id == cid)
         self._refresh_detail()
         self._refresh_records_view()
 
@@ -1880,7 +2192,7 @@ class CommandPanel(QMainWindow):
     # ---------------- 编辑 / 保存 ----------------
     def _persist(self):
         error = save_config(CONFIG_PATH, self.commands,
-                            {"skipTimeout": self.skip_timeout})
+                            {"skipTimeout": self.skip_timeout}, self.usage)
         if error:
             self._status("写回 commands.json 失败：%s" % error, 8000)
             return False
@@ -1911,12 +2223,13 @@ class CommandPanel(QMainWindow):
             if command is None:
                 self._status("命令已不存在")
                 return
-        dialog = CommandDialog(self, command, self._all_tags(), is_new)
+        dialog = CommandDialog(self, command, self._all_tags(), is_new, self._tag_stats())
         if dialog.exec() != QDialog.Accepted:
             return
         if dialog.action == "delete":
             alias = command["alias"]
             self.commands = [c for c in self.commands if c["id"] != command["id"]]
+            self.usage.pop(command["id"], None)   # 删除命令时清空持久化统计，不留残留 id
             if self.selected_id == command["id"]:
                 self.selected_id = None
             self._persist()
@@ -2187,6 +2500,11 @@ class CommandPanel(QMainWindow):
         record.append_receipt("%s %s · 耗时 %s" % (mark, text, fmt_elapsed(elapsed)), rcolor)
         self._log_finish(state, text, key, elapsed)
         self.last_result[state.cmd["id"]] = {"text": text, "elapsed": elapsed, "key": key}
+        # 只有正常结束（非中断、非超时）才累计 usage；失败退出也计一次执行。
+        persisted = True
+        if state.stop_reason is None:
+            self._bump_usage(state.cmd["id"])
+            persisted = self._persist()
         states = self.active_by_id.get(state.cmd["id"])
         if states is not None:
             states.discard(state)
@@ -2196,7 +2514,8 @@ class CommandPanel(QMainWindow):
         self._refresh_tag_pills()
         self._refresh_detail_buttons()
         self._refresh_stats()
-        self._status("%s：%s" % (text, state.cmd["alias"]))
+        if persisted:
+            self._status("%s：%s" % (text, state.cmd["alias"]))
 
     def _trim_records(self):
         while len(self.records) > HISTORY_LIMIT:
