@@ -259,7 +259,7 @@ class MainWindow(QMainWindow):
         set_file_tags(self.cfg.get("file_tags", {}))
 
         self.fav_tree = FavoritesTree(self.cfg)
-        self.fav_tree.navigate.connect(lambda p: self.active_pane().navigate(p))
+        self.fav_tree.navigate.connect(self.navigate_favorite)
         self.fav_tree.smart_requested.connect(self.smart_open)
         self.fav_tree.changed.connect(self._rebuild_fav_bar)
         self.fav_tree.changed.connect(self._sync_fav_menu)
@@ -475,7 +475,7 @@ class MainWindow(QMainWindow):
             if not isinstance(fav, dict) or not fav.get("name") or not fav.get("path"):
                 continue
             self.m_fav_list.addAction("★ " + fav["name"],
-                                      lambda p=fav["path"]: self.active_pane().navigate(p))
+                                      lambda p=fav["path"], n=fav["name"]: self.navigate_favorite(p, n))
 
     # ---- 初始化辅助 ------------------------------------------------------
     def _rebuild_fav_bar(self):
@@ -492,7 +492,7 @@ class MainWindow(QMainWindow):
             b.setFlat(True)
             b.setIcon(fav_icon(fav["name"]))
             b.setToolTip(fav["path"])
-            b.clicked.connect(lambda _=False, p=fav["path"]: self.active_pane().navigate(p))
+            b.clicked.connect(lambda _=False, p=fav["path"], n=fav["name"]: self.navigate_favorite(p, n))
             self.fav_bar.addWidget(b)
         add = QPushButton("＋ 添加收藏")
         add.setFlat(True)
@@ -838,8 +838,47 @@ class MainWindow(QMainWindow):
             return
         self.cfg.setdefault("favorites", []).append({"name": name.strip(), "path": path})
         config.save(self.cfg)
+        # 新增收藏必须同步刷新收藏树：fav_tree 内部维护自己的 QTreeWidgetItem，
+        # 只重建收藏栏/菜单时树看不到新项（新增只在收藏栏出现，树里始终没有）。
+        self.fav_tree.reload()
         self._rebuild_fav_bar()
         self._sync_fav_menu()
+
+    # ---- 收藏导航统一入口 ---------------------------------------------------
+    def navigate_favorite(self, path, name=None):
+        """收藏栏/收藏树点击的统一导航：先激活目标面板（描边高亮），再切目录。
+
+        原来直接 active_pane().navigate(path)：数据确实切了，但活动面板的
+        「激活边框」只在点面板内部时才更新，从收藏点击进去时边框还停在旧面板，
+        用户看着没边框的那一栏，以为"点了没反应"。
+        """
+        raw = str(path or "").strip()
+        if not raw:
+            return
+        if not name:
+            # 收藏树只发路径信号：按路径反查名称，供下面判定特殊目录兜底
+            for fav in self.cfg.get("favorites", []):
+                if isinstance(fav, dict) and fav.get("path") == raw:
+                    name = fav.get("name")
+                    break
+        path = os.path.normpath(os.path.expandvars(os.path.expanduser(raw)))
+        # 用户换机器/换账户后配置里的 home 路径可能失效：已知的特殊目录
+        # 按收藏项名称用当前系统的真实位置兜底，避免"收藏点了完全没反应"。
+        if not os.path.isdir(path) and name:
+            for label, env in (("桌面", "Desktop"), ("下载", "Downloads"), ("文档", "Documents"),
+                               ("图片", "Pictures"), ("音乐", "Music"), ("视频", "Videos")):
+                if label in str(name):
+                    alt = os.path.normpath(os.path.expanduser("~/" + env))
+                    if os.path.isdir(alt):
+                        path = alt
+                        break
+        pane = self.active_pane()
+        if not os.path.isdir(path):
+            self.st_label.setText("收藏路径不存在：%s" % raw)
+            self.st_label.setToolTip(raw)
+            return
+        self._pane_focused(pane)     # 描边高亮 + 共享树同步到目标面板
+        pane.navigate(path)
 
     # ---- 动作工具栏（Actions toolbar）与面板开关 ----------------------------
     def _build_actions_toolbar(self):
