@@ -15,9 +15,9 @@
   "theme_color": "#6366f1",
   "categories": ["developer", "productivity", "utilities"],
   "icons": [
-    { "src": "./auto-icon-192.20261126-030541-197.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
-    { "src": "./auto-icon-512.20261126-030541-197.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
-    { "src": "./auto-maskable-512.20261126-030541-197.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" },
-    { "src": "./auto-icon.20261126-030541-197.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+    { "src": "./auto-icon-192.20261126-092327-684.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "./auto-icon-512.20261126-092327-684.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "./auto-maskable-512.20261126-092327-684.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" },
+    { "src": "./auto-icon.20261126-092327-684.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
   ]
 }
