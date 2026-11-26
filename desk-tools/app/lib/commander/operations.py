@@ -7,6 +7,7 @@
 import os
 import shutil
 import stat as stat_mod
+import string
 import threading
 
 from PySide6.QtCore import QObject, QRunnable, Qt, QThreadPool, Signal
@@ -349,6 +350,66 @@ class DeleteTask(QRunnable):
             self.sig.finished.emit(had_error)
 
 
+def purge_paths(paths):
+    """永久删除（不进回收站，不可恢复）。返回 (成功数, 错误列表)。
+
+    危险路径守卫：拒绝删除盘符根/用户主目录，避免 Shift+Delete 误操作
+    把整个工作目录抹掉。单个条目失败不影响其余项。
+    """
+    ok_count, errors = 0, []
+    protected = {os.path.normcase(os.path.abspath(p))
+                 for p in (os.path.expanduser("~"), os.path.abspath(os.sep))}
+    if os.name == "nt":
+        for letter in string.ascii_uppercase:
+            protected.add(os.path.normcase(letter + ":\\"))
+    for p in paths:
+        try:
+            ap = os.path.normcase(os.path.abspath(p))
+            if ap in protected:
+                errors.append((p, "受保护的系统目录，拒绝永久删除"))
+                continue
+            if not os.path.lexists(p):
+                errors.append((p, "路径不存在"))
+                continue
+            _force_rmtree(p)
+            ok_count += 1
+        except Exception as exc:
+            errors.append((p, str(exc)))
+    return ok_count, errors
+
+
+class PurgeTask(QRunnable):
+    """后台永久删除：大目录 shutil.rmtree 可能耗时，绝不能占 UI 线程。"""
+
+    def __init__(self, paths):
+        super().__init__()
+        self.paths = list(paths)
+        self.cancelled = threading.Event()
+        self.sig = OpSignals()
+
+    def run(self):
+        had_error = False
+        total = len(self.paths)
+        try:
+            self.sig.started.emit(total)
+            if self.cancelled.is_set():
+                self.sig.finished.emit(False)
+                return
+            done, errors = purge_paths(self.paths)
+            for src, msg in errors:
+                had_error = True
+                self.sig.error.emit(src, msg, lambda _reply: None)
+            for i, p in enumerate(self.paths[:done], 1):
+                self.sig.progress.emit(i, total)
+                self.sig.file_done.emit(p)
+        except Exception as exc:
+            had_error = True
+            self.sig.error.emit(self.paths[0] if self.paths else "", str(exc),
+                                lambda _reply: None)
+        finally:
+            self.sig.finished.emit(had_error)
+
+
 class OpQueue(QObject):
     """操作队列：跟踪全部后台任务，供操作队列栏显示（FC 的 Operations queue bar）。"""
     changed = Signal()
@@ -402,6 +463,14 @@ class OpRunner:
         if self.queue is not None:
             self.queue.add(task, "删除到回收站 %d 项" % len(paths))
         self._run_with_dialog(task, "删除到回收站")
+        return task
+
+    def run_purge(self, paths):
+        """永久删除（Shift+Delete）：不可恢复，UI 侧须先二次确认。"""
+        task = PurgeTask(paths)
+        if self.queue is not None:
+            self.queue.add(task, "永久删除 %d 项" % len(paths))
+        self._run_with_dialog(task, "永久删除")
         return task
 
     def run_zip(self, srcs, zip_path):

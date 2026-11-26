@@ -3,6 +3,7 @@
 
 - 双栏 + 每栏多标签页；
 - F2 重命名 / F3 查看 / F4 编辑 / F5 复制 / F6 移动 / F7 新建 / F8 删除 / F9 搜索；
+- Delete 删除到回收站 / Shift+Delete 永久删除（二次强确认，不可恢复）；
 - Ctrl+C / X / V 剪贴板复制、剪切、粘贴；Ctrl+H 切换单双栏；Ctrl+. 切换隐藏文件；
 - 底部命令行：输入 cd、常用命令（以 ! 前缀直接执行任意命令）。
 纯本地：无网络、无鉴权、无远程能力。
@@ -506,6 +507,9 @@ class MainWindow(QMainWindow):
             ("F4", self.edit_selected), ("F5", self.copy_selected),
             ("F6", self.move_selected), ("F7", self.new_folder),
             ("F8", self.delete_selected), ("F9", self.search_here),
+            # Windows 通用约定：Delete 到回收站，Shift+Delete 永久删除。
+            ("Delete", self.delete_selected),
+            ("Shift+Delete", self.purge_selected),
             ("Ctrl+C", self.clipboard_copy), ("Ctrl+X", self.clipboard_cut),
             ("Ctrl+V", self.paste_active), ("Ctrl+R", self.refresh_all),
             ("Ctrl+.", self.toggle_hidden), ("Ctrl+T", self.new_tab),
@@ -688,7 +692,26 @@ class MainWindow(QMainWindow):
         if task is not None:
             task.sig.finished.connect(lambda *_: (pane.refresh(), dst.refresh()))
 
+    def _delete_focus_ok(self):
+        """Delete/Shift+Delete 是窗口级快捷键：焦点在文本输入框时应让
+        Delete 正常删字符，而不是删文件。仅在文件视图有焦点时执行文件删除。"""
+        try:
+            w = QApplication.focusWidget()
+        except Exception:
+            return True
+        if w is None:
+            return True
+        # 文本框/命令行/过滤框/路径框里按 Delete 属于文本编辑
+        if isinstance(w, QLineEdit):
+            return False
+        parent = w.parent() if hasattr(w, "parent") else None
+        if parent is not None and isinstance(parent, QLineEdit):
+            return False
+        return True
+
     def delete_selected(self):
+        if not self._delete_focus_ok():
+            return
         pane = self.active_pane()
         sel = pane.selected_entries()
         if not sel:
@@ -697,13 +720,37 @@ class MainWindow(QMainWindow):
         more = "" if len(sel) <= 5 else " 等 %d 项" % len(sel)
         box = QMessageBox(self)
         box.setWindowTitle("删除确认")
-        box.setText("把 %s%s 移入回收站？" % (names, more))
+        box.setText("把 %s%s 移入回收站？\n（Shift+Delete 可永久删除，不进回收站）" % (names, more))
         yes = box.addButton("移入回收站", QMessageBox.AcceptRole)
         box.addButton("取消", QMessageBox.RejectRole)
         box.exec()
         if box.clickedButton() is not yes:
             return
         task = self.op.run_delete([e.path for e in sel])
+        task.sig.finished.connect(lambda *_: pane.refresh())
+
+    def purge_selected(self):
+        """Shift+Delete：永久删除（不可恢复）。必须二次强确认。"""
+        if not self._delete_focus_ok():
+            return
+        pane = self.active_pane()
+        sel = pane.selected_entries()
+        if not sel:
+            return
+        names = "、".join(e.name for e in sel[:5])
+        more = "" if len(sel) <= 5 else " 等 %d 项" % len(sel)
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Warning)
+        box.setWindowTitle("永久删除（不可恢复）")
+        box.setText("永久删除 %s%s？" % (names, more))
+        box.setInformativeText("此操作不进回收站，无法撤销！确定要继续吗？")
+        yes = box.addButton("永久删除", QMessageBox.AcceptRole)
+        cancel = box.addButton("取消", QMessageBox.RejectRole)
+        box.setDefaultButton(cancel)
+        box.exec()
+        if box.clickedButton() is not yes:
+            return
+        task = self.op.run_purge([e.path for e in sel])
         task.sig.finished.connect(lambda *_: pane.refresh())
 
     def rename_selected(self):

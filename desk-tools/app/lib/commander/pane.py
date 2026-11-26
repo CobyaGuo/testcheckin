@@ -13,7 +13,7 @@ from . import icons
 from PySide6.QtWidgets import (QApplication, QComboBox, QFileDialog,
                                QFileSystemModel, QHBoxLayout, QHeaderView,
                                QLabel, QLineEdit,
-                               QListView, QMenu, QPushButton, QSplitter,
+                               QListView, QMenu, QPushButton, QSizePolicy, QSplitter,
                                QStackedWidget, QTableView, QToolButton,
                                QTreeView, QVBoxLayout, QWidget)
 
@@ -88,13 +88,24 @@ def drive_tip(d):
 
 class CrumbBar(QWidget):
     """面包屑地址栏（FC UiAddressBar）：路径分段按钮，点击跳转；
-    每段带 ▾ 下拉列出其子文件夹；点击空白区进入路径编辑。"""
+    每段带 ▾ 下拉列出其子文件夹；点击空白区进入路径编辑。
+
+    长路径保护：路径深/段名长时若按内容自然伸展，会把 QSplitter 的左右
+    面板撑到窗口之外（实测 1280 窗口里 pane 被撑到 1989px），收藏树/文件树
+    被压成窄条。这里 ① sizeHint 不参与宽度决策（Ignored + minimumWidth 0）；
+    ② 超过 5 段折叠中间为「…」菜单；③ 每段按可用宽度 elide，超长段不再撑开。
+    """
     crumb_clicked = Signal(str)
     edit_requested = Signal()
+
+    MAX_SEGMENTS = 5          # 超过则折叠中间段（保留盘符 + 末 3 段）
+    MAX_SEGMENT_PX = 132      # 单段按钮最大宽度，超出 elide
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName("crumbBar")
+        self.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        self.setMinimumWidth(0)
         self._path = ""
         self.h = QHBoxLayout(self)
         self.h.setContentsMargins(0, 0, 0, 0)
@@ -104,10 +115,21 @@ class CrumbBar(QWidget):
         if path == self._path:
             return
         self._path = path
+        self._rebuild()
+
+    def resizeEvent(self, ev):
+        super().resizeEvent(ev)
+        # 栏宽变化（拖动 splitter / 切换单双栏）后按新宽度重算可见段数与 elide。
+        if abs(ev.size().width() - getattr(self, "_built_width", -1)) > 12:
+            self._rebuild()
+
+    def _rebuild(self):
+        self._built_width = self.width()
         while self.h.count():
             it = self.h.takeAt(0)
             if it.widget():
                 it.widget().deleteLater()
+        path = self._path
         if not path:
             self.h.addStretch(1)
             return
@@ -121,9 +143,49 @@ class CrumbBar(QWidget):
         for seg in [s for s in rest.replace("/", "\\").split("\\") if s]:
             cur = os.path.normpath(os.path.join(cur, seg))
             parts.append((seg, cur))
-        for label, target in parts:
+
+        # 按当前宽度决定能放几段：每段成本 ≈ 文本宽 + ▾ 14px + spacing。
+        budget = max(self.width(), 120)
+        n = min(len(parts), self.MAX_SEGMENTS)
+        while n > 2 and (budget - n * 16) // n < 34:
+            n -= 1
+        seg_px = max(28, min(self.MAX_SEGMENT_PX, (budget - n * 16) // n))
+
+        hidden = []
+        if n < len(parts):
+            tail = max(1, n - 2)               # 盘符/首段 + … + 末 N
+            hidden = parts[1:len(parts) - tail]
+            shown = [(parts[0][0], parts[0][1], False),
+                     ("…", "", True)] + \
+                    [(l, t, False) for l, t in parts[-tail:]]
+        else:
+            shown = [(l, t, False) for l, t in parts]
+
+        fm = self.fontMetrics()
+        for label, target, collapsed in shown:
+            if collapsed:
+                b = QToolButton()
+                b.setText("…")
+                b.setAutoRaise(True)
+                b.setFixedWidth(22)
+                b.setFocusPolicy(Qt.NoFocus)
+                m = QMenu(b)
+                for hlabel, htarget in hidden:
+                    act = m.addAction("📁 " + hlabel)
+                    act.triggered.connect(
+                        lambda _=False, pp=htarget: self.crumb_clicked.emit(pp))
+                m.addSeparator()
+                act = m.addAction("编辑完整路径…")
+                act.triggered.connect(lambda _=False: self.edit_requested.emit())
+                b.setMenu(m)
+                b.setPopupMode(QToolButton.InstantPopup)
+                b.setToolTip("折叠了 %d 级目录（点击展开）" % len(hidden))
+                self.h.addWidget(b, 0, Qt.AlignLeft)
+                continue
+            elided = fm.elidedText(label, Qt.ElideMiddle, seg_px)
             b = QToolButton()
-            b.setText(label if len(label) <= 26 else label[:24] + "…")
+            b.setText(elided)
+            b.setMinimumWidth(0)                # 极端窄栏时允许被压缩，不溢出
             b.setToolTip(target)
             b.setAutoRaise(True)
             b.setFocusPolicy(Qt.NoFocus)
@@ -207,6 +269,11 @@ class FilePane(QWidget):
         self.path_edit.setObjectName("pathBar")
         self.path_edit.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
         self.path_edit.setMinimumContentsLength(30)
+        # 但 30 字符的 minimumContentsLength（约 388px）会作为 minimumSizeHint
+        # 参与 QSplitter 分配：长路径编辑时把左右面板撑变形。设为 0 下限，
+        # 实际宽度由 layout 的 stretch=1 决定，超长文本靠 lineEdit 横向滚动。
+        self.path_edit.setMinimumWidth(0)
+        self.path_edit.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
         # 可编辑 QComboBox 默认挂 QCompleter：粘贴/输入历史路径时弹窗会拦截
         # 回车并自动改写文本，导致 returnPressed 不触发或提交到旧值。本框仅作
         # 手输/粘贴路径用，关闭自动补全即可根治。
@@ -655,8 +722,10 @@ class FilePane(QWidget):
             a_untag = tag_menu.addAction("移除标签")
             a_untag.triggered.connect(lambda: self.main.tag_entry(None))
             menu.addSeparator()
-            a_del = menu.addAction("删除到回收站 (F8)")
+            a_del = menu.addAction("删除到回收站 (Delete / F8)")
             a_del.triggered.connect(self.main.delete_selected)
+            a_purge = menu.addAction("永久删除 (Shift+Delete)")
+            a_purge.triggered.connect(self.main.purge_selected)
         a_paste = menu.addAction("粘贴到此处 (Ctrl+V)")
         a_paste.triggered.connect(self.main.paste_into_pane)
         menu.addSeparator()
