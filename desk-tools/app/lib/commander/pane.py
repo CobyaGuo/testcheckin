@@ -5,7 +5,7 @@ import string
 import sys
 
 from PySide6.QtCore import (QDir, QMetaObject, QModelIndex, QPoint, Q_ARG,
-                            QRunnable, QSize, Qt, QThreadPool, Signal, Slot)
+                            QRunnable, QSize, Qt, QThreadPool, QTimer, Signal, Slot)
 from PySide6.QtGui import (QAction, QGuiApplication, QColor, QPainter, QPen,
                            QStandardItem)
 from PySide6.QtWidgets import QListView
@@ -115,9 +115,11 @@ class CrumbBar(QWidget):
         parts = []
         if drive:
             parts.append((drive + "\\", drive + "\\"))
-        cur = drive
-        for seg in [s for s in rest.split("\\") if s]:
-            cur = os.path.join(cur, seg)
+        # 关键：必须以 "D:\\" 为起点，不能用 "D:"——os.path.join("D:", seg)
+        # 得到的是盘符相对路径 "D:seg"（isdir/scandir 全部失败）。
+        cur = drive + "\\" if drive else ""
+        for seg in [s for s in rest.replace("/", "\\").split("\\") if s]:
+            cur = os.path.normpath(os.path.join(cur, seg))
             parts.append((seg, cur))
         for label, target in parts:
             b = QToolButton()
@@ -205,8 +207,17 @@ class FilePane(QWidget):
         self.path_edit.setObjectName("pathBar")
         self.path_edit.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
         self.path_edit.setMinimumContentsLength(30)
+        # 可编辑 QComboBox 默认挂 QCompleter：粘贴/输入历史路径时弹窗会拦截
+        # 回车并自动改写文本，导致 returnPressed 不触发或提交到旧值。本框仅作
+        # 手输/粘贴路径用，关闭自动补全即可根治。
+        self.path_edit.setCompleter(None)
         self.path_edit.lineEdit().returnPressed.connect(self._path_submitted)
-        self.path_edit.activated.connect(lambda i: self.navigate(self.path_edit.itemText(i)))
+        # 回车时 QComboBox 会同时发 activated 和 returnPressed，而且 _set_path_text
+        # 里的 setCurrentText/addItem 还会延迟派发一个带旧 index 的 activated。
+        # 两条信号若不合并，会对同一回车触发多次 navigate，互相作废扫描 epoch，
+        # 列表最终停在旧目录。用标志位只认第一次提交。
+        self._path_submitting = False
+        self.path_edit.activated.connect(lambda i: self._path_submitted())
 
         # 面包屑地址栏（UiAddressBar）：分段按钮 + 子文件夹下拉
         self.crumb = CrumbBar()
@@ -452,8 +463,15 @@ class FilePane(QWidget):
         if not os.path.isdir(path):
             self._set_path_text(self.model.path)
             return
+        # 目录导航必须回到文件列表视图：否则从智能文件夹结果页（页 2）
+        # 点收藏/树/面包屑后，model 已加载但界面还停在结果页，看起来"无响应"。
+        if self.stack.currentIndex() == 2:
+            self.stack.setCurrentIndex(0 if self._view_mode == VIEW_DETAIL else 1)
         if push_history and self._hist_pos >= 0 and path == self._history[self._hist_pos]:
-            self.model.refresh()
+            # 不能用 model.refresh()：它读 model.path，而异步扫描可能还没完成，
+            # model.path 仍是上一个目录，会把刚提交的导航"回退"到旧目录。
+            # 直接按请求路径重新扫描，重复 navigate 同路径也是幂等的。
+            self.model.load(path)
             return
         if push_history:
             self._history = self._history[:self._hist_pos + 1]
@@ -477,8 +495,23 @@ class FilePane(QWidget):
         self.crumb.set_path(path)
 
     def _path_submitted(self):
-        self.navigate(self.path_edit.currentText())
-        self.path_edit.setVisible(False)
+        # 同一次回车可能同时触发 activated / returnPressed / setCurrentText
+        # 延迟派发的 activated；只认第一次，避免多次 navigate 互相作废扫描。
+        if self._path_submitting:
+            return
+        self._path_submitting = True
+        try:
+            # 直接读输入框文本：currentText() 在 QComboBox 下拉项含相同前缀时
+            # 可能返回被自动匹配的历史项，而非用户刚粘贴/输入的内容。
+            text = self.path_edit.lineEdit().text().strip()
+            self.navigate(text)
+            self.path_edit.setVisible(False)
+        finally:
+            # 延迟派发的 activated 可能在事件循环下一轮才到，延后解锁
+            QTimer.singleShot(0, self._clear_path_submitting)
+
+    def _clear_path_submitting(self):
+        self._path_submitting = False
 
     def go_up(self):
         p = self.model.path

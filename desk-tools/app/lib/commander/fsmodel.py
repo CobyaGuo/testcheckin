@@ -221,6 +221,11 @@ class FsModel(QAbstractTableModel):
         self._lock = threading.Lock()
         self._pool = QThreadPool.globalInstance()
         self.show_hidden = False
+        # ScanTask 必须保持强引用直到结果信号返回：QThreadPool 只持有 C++ 侧
+        # QRunnable，Python 包装对象一旦被 GC，其 sig(QObject) 被销毁，
+        # 后台 run() 里 emit 会抛 "Signal source has been deleted"，界面永远
+        # 拿不到扫描结果（表现为切目录后列表不动）。
+        self._tasks = []
 
     # ---- 数据载入 ------------------------------------------------------
     def load(self, path):
@@ -231,9 +236,17 @@ class FsModel(QAbstractTableModel):
         task = ScanTask(epoch, path, self.show_hidden)
         task.sig.done.connect(self._on_done)
         task.sig.failed.connect(self._on_failed)
+        task.setAutoDelete(False)           # 由 Python 侧 _tasks 管理生命周期
+        with self._lock:
+            self._tasks.append(task)
         self._pool.start(task)
 
+    def _forget_task(self, epoch):
+        with self._lock:
+            self._tasks = [t for t in self._tasks if t.epoch != epoch]
+
     def _on_done(self, epoch, path, entries):
+        self._forget_task(epoch)
         if not self._is_current(epoch):
             return
         self.beginResetModel()
@@ -243,6 +256,7 @@ class FsModel(QAbstractTableModel):
         self.loaded.emit(path)
 
     def _on_failed(self, epoch, path, err):
+        self._forget_task(epoch)
         if not self._is_current(epoch):
             return
         self.beginResetModel()

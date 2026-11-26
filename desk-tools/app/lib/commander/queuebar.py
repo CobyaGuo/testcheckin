@@ -113,6 +113,9 @@ class FavoritesTree(QWidget):
         self.cfg = cfg
         self.tree = QTreeWidget()
         self.tree.setHeaderHidden(True)
+        # 单击即打开（收藏/智能文件夹），双击保留兼容；QTreeWidget 对有子项的
+        # 节点单击会展开，_open 里对无 data 的分组/智能根节点直接忽略。
+        self.tree.itemClicked.connect(self._open)
         self.tree.itemDoubleClicked.connect(self._open)
         self.tree.setContextMenuPolicy(Qt.CustomContextMenu)
         self.tree.customContextMenuRequested.connect(self._menu)
