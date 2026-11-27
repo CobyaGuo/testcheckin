@@ -1348,18 +1348,22 @@ def _try_single_instance():
 
 
 def main():
+    if os.name == "nt":
+        # 进程级设置必须早于 QApplication / 任何窗口创建，否则 Windows 任务栏
+        # 会先按 pythonw.exe 注册按钮，之后再改 AppUserModelID 也不会刷新，
+        # 表现为图标变成通用「应用」图标或干脆消失。
+        try:
+            import ctypes
+            ctypes.windll.kernel32.FreeConsole()
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
+                "cobyg.desktools.commander")
+        except Exception:
+            pass
     if not _try_single_instance():
         sys.exit(0)
     app = QApplication(sys.argv)
     app.setApplicationName("commander")
     apply_theme(app)
-    if os.name == "nt":
-        # 让任务栏图标用我们的 ico 而不是 python 默认图标
-        try:
-            import ctypes
-            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("desk-tools.commander")
-        except Exception:
-            pass
     icon_path = os.path.join(_ASSETS, "commander.ico")
     if os.path.exists(icon_path):
         from PySide6.QtGui import QColor, QIcon as _QIcon
