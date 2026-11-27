@@ -6,6 +6,7 @@
 - FavoritesTree：左侧收藏树面板，支持分组（名称含"/"归组），右键管理，双击跳转。
 """
 from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QCursor
 from PySide6.QtWidgets import (QComboBox, QDialog, QHBoxLayout, QLabel, QMenu, QProgressBar,
                                QPushButton, QTreeWidget, QTreeWidgetItem,
                                QVBoxLayout, QWidget, QInputDialog, QMessageBox)
@@ -220,6 +221,11 @@ class FavoritesTree(QWidget):
                 it = QTreeWidgetItem(parent, [" " + name])
                 it.setIcon(0, self._fav_icon(name))
                 it.setData(0, Qt.UserRole, path)
+                # 额外挂收藏项的对象 id：编辑/移动/删除按引用定位，避免同名
+                # 或多层分组时按名称反查取错项。注意 Qt 的 setData 对 Python
+                # 对象会返回副本，必须存 id(fav) 整数再按 id 在配置里回查。
+                # UserRole 继续存路径供 _open 使用。
+                it.setData(0, Qt.UserRole + 1, id(fav))
                 it.setToolTip(0, path)
 
     def _smart_menu(self, menu, it):
@@ -277,112 +283,185 @@ class FavoritesTree(QWidget):
         self.reload()
         self.changed.emit()
 
+    # ---- 收藏集/收藏项操作（收藏树右键与工具栏右键共用） ----------------
+    def _commit(self):
+        """统一落盘 + 刷新树/工具栏/菜单。"""
+        from . import config
+        config.save(self.cfg)
+        self.reload()
+        self.changed.emit()
+
+    def _container(self, key):
+        """key="" 为默认收藏集，否则为命名收藏集。"""
+        if not key:
+            return self.cfg.setdefault("favorites", [])
+        return self.cfg.setdefault("fav_sets", {}).setdefault(key, [])
+
+    def _containers(self):
+        yield "", self._container("")
+        for key in list(self.cfg.get("fav_sets", {})):
+            yield key, self._container(key)
+
+    def set_choices(self, exclude=""):
+        """可移动到的收藏集列表：[(key, 显示名)]，排除来源集合。"""
+        out = []
+        if exclude:
+            out.append(("", "默认收藏"))
+        for key in self.cfg.get("fav_sets", {}):
+            if key != exclude:
+                out.append((key, key))
+        return out
+
+    def new_set(self):
+        name, ok = QInputDialog.getText(self, "新建收藏集", "收藏集名称：")
+        if ok and name.strip():
+            self._cur_set = name.strip()
+            self._container(self._cur_set)
+            self._commit()
+
+    def rename_set(self):
+        if not self._cur_set:
+            return
+        name, ok = QInputDialog.getText(self, "重命名收藏集", "新名称：", text=self._cur_set)
+        if ok and name.strip():
+            sets = self.cfg.get("fav_sets", {})
+            if self._cur_set in sets:
+                sets[name.strip()] = sets.pop(self._cur_set)
+            self._cur_set = name.strip()
+            self._commit()
+
+    def delete_set(self):
+        if not self._cur_set:
+            return
+        if QMessageBox.question(self, "删除收藏集",
+                                f"删除收藏集「{self._cur_set}」？") == QMessageBox.Yes:
+            self.cfg.get("fav_sets", {}).pop(self._cur_set, None)
+            self._cur_set = ""
+            self._commit()
+
+    def add_current_dir(self):
+        main = self.window()
+        pane = main.active_pane() if hasattr(main, "active_pane") else None
+        path = pane.current_path() if pane else os.getcwd()
+        if not path:
+            return
+        name, ok = QInputDialog.getText(self, "添加收藏", "名称（可用 分组/名称）：",
+                                        text=os.path.basename(path))
+        if ok and name.strip():
+            self._container(self._cur_set).append({"name": name.strip(), "path": path})
+            self._commit()
+
+    def add_selected_file(self):
+        main = self.window()
+        pane = main.active_pane() if hasattr(main, "active_pane") else None
+        entries = pane.selected_entries() if pane else []
+        files = [e for e in entries if not e.is_dir]
+        if not files:
+            QMessageBox.information(self, "添加收藏", "请先在面板中选中一个文件")
+        else:
+            self._container(self._cur_set).append(
+                {"name": os.path.basename(files[0].path), "path": files[0].path})
+            self._commit()
+
+    def edit_fav(self, fav):
+        """编辑收藏项名称/路径（按对象引用定位，分组/同名也不串）。"""
+        if not isinstance(fav, dict):
+            return
+        name, ok = QInputDialog.getText(self, "编辑收藏", "名称（可用 分组/名称）：",
+                                        text=fav.get("name", ""))
+        if not ok or not name.strip():
+            return
+        path, ok = QInputDialog.getText(self, "编辑收藏", "路径：", text=fav.get("path", ""))
+        if not ok or not path.strip():
+            return
+        fav["name"], fav["path"] = name.strip(), path.strip()
+        self._commit()
+
+    def move_fav(self, fav, target_set=""):
+        """把收藏项移到目标收藏集（target_set="" 为默认收藏集）。"""
+        if not isinstance(fav, dict):
+            return False
+        if target_set and target_set not in self.cfg.get("fav_sets", {}):
+            return False
+        for _, items in self._containers():
+            items[:] = [f for f in items if f is not fav]
+        self._container(target_set).append(fav)
+        self._cur_set = target_set       # 切到目标集合，让用户立刻看到移动结果
+        self._commit()
+        return True
+
+    def delete_fav(self, fav):
+        if not isinstance(fav, dict):
+            return
+        for _, items in self._containers():
+            items[:] = [f for f in items if f is not fav]
+        self._commit()
+
+    def build_menu(self, fav=None, source_set="", parent=None):
+        """构建右键菜单，返回 (menu, actions)；不 exec，便于测试与工具栏复用。"""
+        menu = QMenu(parent or self)
+        acts = {}
+        if fav is not None:
+            acts["edit"] = menu.addAction("编辑此收藏…")
+            m_move = menu.addMenu("移动到收藏集")
+            acts["move"] = {}
+            for key, label in self.set_choices(source_set):
+                a = m_move.addAction(label)
+                acts["move"][a] = key
+            if not acts["move"]:
+                m_move.setEnabled(False)
+            acts["del"] = menu.addAction("删除此收藏")
+            menu.addSeparator()
+        acts["add"] = menu.addAction("添加当前目录…")
+        acts["addf"] = menu.addAction("添加当前选中文件…")
+        m_sets = menu.addMenu("收藏集")
+        acts["newset"] = m_sets.addAction("新建收藏集…")
+        acts["renset"] = m_sets.addAction("重命名当前收藏集…")
+        acts["delset"] = m_sets.addAction("删除当前收藏集…")
+        return menu, acts
+
+    def handle_action(self, act, acts, fav=None, source_set=""):
+        if act is None:
+            return
+        if fav is not None:
+            if act is acts.get("edit"):
+                return self.edit_fav(fav)
+            move_map = acts.get("move", {})
+            if act in move_map:
+                return self.move_fav(fav, move_map[act])
+            if act is acts.get("del"):
+                return self.delete_fav(fav)
+        if act is acts.get("add"):
+            return self.add_current_dir()
+        if act is acts.get("addf"):
+            return self.add_selected_file()
+        if act is acts.get("newset"):
+            return self.new_set()
+        if act is acts.get("renset"):
+            return self.rename_set()
+        if act is acts.get("delset"):
+            return self.delete_set()
+
+    def popup_menu(self, fav=None, source_set="", global_pos=None, parent=None):
+        """显示右键菜单并执行选中动作；工具栏按钮复用同一入口。"""
+        menu, acts = self.build_menu(fav, source_set, parent)
+        act = menu.exec(global_pos) if global_pos is not None else menu.exec_(QCursor.pos())
+        self.handle_action(act, acts, fav, source_set)
+
     def _menu(self, pos):
         self._menu_pos = pos
         it = self.tree.itemAt(pos)
         if it is not None:
             data = it.data(0, Qt.UserRole)
-            if isinstance(data, tuple) and data[0] == "smart" or \
+            if (isinstance(data, tuple) and data[0] == "smart") or \
                     it.text(0).strip() == "智能文件夹":
                 menu = QMenu(self)
                 self._smart_menu(menu, it)
                 return
-        menu = QMenu(self)
-        m_sets = menu.addMenu("收藏集")
-        a_newset = m_sets.addAction("新建收藏集…")
-        a_renset = m_sets.addAction("重命名当前收藏集…")
-        a_delset = m_sets.addAction("删除当前收藏集…")
-        menu.addSeparator()
-        a_add = menu.addAction("添加当前目录…")
-        a_addf = menu.addAction("添加当前选中文件…")
-        a_edit = menu.addAction("编辑选中收藏…")
-        a_del = menu.addAction("删除选中收藏")
-        act = menu.exec(self.tree.mapToGlobal(pos))
-        if act is a_newset:
-            name, ok = QInputDialog.getText(self, "新建收藏集", "收藏集名称：")
-            if ok and name.strip():
-                self._cur_set = name.strip()
-                self.cfg.setdefault("fav_sets", {})[self._cur_set] = []
-                from . import config
-                config.save(self.cfg)
-                self.reload()
-                self.changed.emit()
-        elif act is a_renset and self._cur_set:
-            name, ok = QInputDialog.getText(self, "重命名收藏集", "新名称：", text=self._cur_set)
-            if ok and name.strip():
-                sets = self.cfg.get("fav_sets", {})
-                sets[name.strip()] = sets.pop(self._cur_set)
-                self._cur_set = name.strip()
-                from . import config
-                config.save(self.cfg)
-                self.reload()
-                self.changed.emit()
-        elif act is a_delset and self._cur_set:
-            if QMessageBox.question(self, "删除收藏集",
-                                    f"删除收藏集「{self._cur_set}」？") == QMessageBox.Yes:
-                self.cfg.get("fav_sets", {}).pop(self._cur_set, None)
-                self._cur_set = ""
-                from . import config
-                config.save(self.cfg)
-                self.reload()
-                self.changed.emit()
-        elif act is a_add:
-            main = self.window()
-            pane = main.active_pane() if hasattr(main, "active_pane") else None
-            path = pane.current_path() if pane else os.getcwd()
-            name, ok = QInputDialog.getText(self, "添加收藏", "名称（可用 分组/名称）：",
-                                            text=os.path.basename(path))
-            if ok and name.strip():
-                self._items().append({"name": name.strip(), "path": path})
-                from . import config
-                config.save(self.cfg)
-                self.reload()
-                self.changed.emit()
-        elif act is a_addf:
-            main = self.window()
-            pane = main.active_pane() if hasattr(main, "active_pane") else None
-            entries = pane.selected_entries() if pane else []
-            files = [e for e in entries if not e.is_dir]
-            if not files:
-                QMessageBox.information(self, "添加收藏", "请先在面板中选中一个文件")
-            else:
-                self._items().append(
-                    {"name": os.path.basename(files[0].path), "path": files[0].path})
-                from . import config
-                config.save(self.cfg)
-                self.reload()
-                self.changed.emit()
-        elif act is a_edit:
-            it = self.tree.currentItem()
-            if it:
-                old_name = it.text(0).lstrip("★📁 ")
-                if it.parent():
-                    old_name = it.parent().text(0).lstrip("📁 ") + "/" + old_name
-                fav = next((f for f in self._items()
-                            if isinstance(f, dict) and f.get("name") == old_name), None)
-                if fav:
-                    name, ok = QInputDialog.getText(self, "编辑收藏", "名称：",
-                                                    text=fav["name"])
-                    if not ok or not name.strip():
-                        return
-                    path, ok = QInputDialog.getText(self, "编辑收藏", "路径：",
-                                                    text=fav["path"])
-                    if not ok or not path.strip():
-                        return
-                    fav["name"], fav["path"] = name.strip(), path.strip()
-                    from . import config
-                    config.save(self.cfg)
-                    self.reload()
-                    self.changed.emit()
-        elif act is a_del:
-            it = self.tree.currentItem()
-            if it:
-                name = it.text(0).lstrip("★📁 ")
-                if it.parent():
-                    name = it.parent().text(0).lstrip("📁 ") + "/" + name
-                self._set_items([f for f in self._items()
-                                 if not isinstance(f, dict) or f.get("name") != name])
-                from . import config
-                config.save(self.cfg)
-                self.reload()
-                self.changed.emit()
+            fav_id = it.data(0, Qt.UserRole + 1)
+            fav = next((f for f in self._items()
+                        if isinstance(f, dict) and id(f) == fav_id), None)
+            if fav is not None:
+                self.popup_menu(fav, self._cur_set, self.tree.mapToGlobal(pos), self)
+                return
+        self.popup_menu(None, self._cur_set, self.tree.mapToGlobal(pos), self)

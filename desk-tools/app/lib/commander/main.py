@@ -565,14 +565,33 @@ class MainWindow(QMainWindow):
             b = QPushButton(" " + fav["name"])
             b.setFlat(True)
             b.setIcon(fav_icon(fav["name"]))
-            b.setToolTip(fav["path"])
+            b.setToolTip(fav["path"] + "\n（右键可编辑 / 移动到收藏集）")
             b.clicked.connect(lambda _=False, p=fav["path"], n=fav["name"]: self.navigate_favorite(p, n))
+            # 右键复用收藏树同一套菜单：编辑 / 移动到收藏集 / 删除 / 收藏集管理
+            b.setContextMenuPolicy(Qt.CustomContextMenu)
+            b.customContextMenuRequested.connect(
+                lambda pos, btn=b, f=fav: self._fav_bar_menu(pos, btn, f))
             self.fav_bar.addWidget(b)
         add = QPushButton("＋ 添加收藏")
         add.setFlat(True)
         add.clicked.connect(self.add_favorite)
         self.fav_bar.addWidget(add)
+        manage = QPushButton("收藏集")
+        manage.setFlat(True)
+        manage.setToolTip("管理收藏集：新建 / 重命名 / 删除 / 移动收藏项")
+        manage.clicked.connect(self.open_fav_manager)
+        self.fav_bar.addWidget(manage)
         self.fav_bar.addStretch(1)
+
+    def _fav_bar_menu(self, pos, btn, fav):
+        """工具栏收藏按钮右键 → 与收藏树共用同一套编辑/移动/删除菜单。"""
+        self.fav_tree.popup_menu(fav, "", btn.mapToGlobal(pos), self)
+
+    def open_fav_manager(self):
+        """从工具栏打开收藏树并聚焦收藏集下拉，便于集中管理。"""
+        if not self.fav_tree.isVisible():
+            self.toggle_fav_tree()
+        self.fav_tree.set_combo.setFocus()
 
     def _shortcuts(self):
         sc = [

@@ -82,6 +82,14 @@ def load():
         _warn("收藏配置格式错误，已按默认收藏启动")
         merged["favorites"] = json.loads(json.dumps(DEFAULTS["favorites"]))
 
+    # 收藏集格式损坏会让切换下拉/右键菜单构建时崩溃，逐项容错
+    sets = merged.get("fav_sets")
+    if sets is not None and not isinstance(sets, dict):
+        _warn("收藏集配置格式错误，已忽略")
+        merged["fav_sets"] = {}
+    elif isinstance(sets, dict):
+        merged["fav_sets"] = {k: v for k, v in sets.items() if isinstance(v, list)}
+
     # panes 结构损坏同样会导致主窗口构建失败
     panes = merged.get("panes")
     if (not isinstance(panes, list) or len(panes) != 2
