@@ -6,8 +6,9 @@ import sys
 from datetime import datetime
 
 from PySide6.QtCore import (QDir, QMetaObject, QModelIndex, QPoint, Q_ARG,
+                            QByteArray, QMimeData, QUrl,
                             QRunnable, QSize, Qt, QThreadPool, QTimer, Signal, Slot)
-from PySide6.QtGui import (QAction, QGuiApplication, QColor, QPainter, QPen,
+from PySide6.QtGui import (QAction, QDrag, QGuiApplication, QColor, QPainter, QPen,
                            QStandardItem)
 from PySide6.QtWidgets import QListView
 from . import icons
@@ -18,10 +19,166 @@ from PySide6.QtWidgets import (QAbstractItemView, QApplication, QComboBox, QComp
                                QStackedWidget, QTableView, QToolButton,
                                QTreeView, QVBoxLayout, QWidget)
 
-from .fsmodel import (COL_NAME, COL_SIZE, COL_TYPE, COL_MTIME, FsModel,
+from .fsmodel import (COL_NAME, COL_SIZE, COL_TYPE, COL_MTIME, Entry, FsModel,
                       FsProxy, sys_icon)
 
 VIEW_DETAIL, VIEW_ICONS = "detail", "icons"
+
+# 内部拖放专用 MIME：外部程序（聊天窗口/资源管理器）只认 text/uri-list，
+# 内部则靠这个自定义类型区分「从 commander 拖出」与「从外部拖入」。
+_DRAG_MIME = "application/x-commander-paths"
+
+
+def drag_mime_data(paths):
+    """构造标准文件拖放数据 + 内部路径清单。"""
+    md = QMimeData()
+    md.setUrls([QUrl.fromLocalFile(p) for p in paths])
+    text = "\n".join(paths)
+    md.setText(text)
+    md.setData(_DRAG_MIME, QByteArray(text.encode("utf-8")))
+    return md
+
+
+def paths_from_mime(md):
+    """从拖放数据还原本地路径；只接受真实存在的路径，避免把任意文本当文件。"""
+    if md is None:
+        return []
+    if md.hasFormat(_DRAG_MIME):
+        raw = bytes(md.data(_DRAG_MIME)).decode("utf-8", "replace")
+        paths = [p for p in raw.split("\n") if p]
+        if paths:
+            return paths
+    if md.hasUrls():
+        # Windows 上 QUrl.toLocalFile() 返回正斜杠，统一成系统路径写法，
+        # 否则后续 normcase/abspath 与界面路径对不上。
+        paths = [os.path.normpath(u.toLocalFile()) for u in md.urls()
+                 if u.isLocalFile() and u.toLocalFile()]
+        if paths:
+            return paths
+    if md.hasText():
+        paths = [line.strip() for line in md.text().splitlines() if line.strip()]
+        if paths and all(os.path.exists(p) for p in paths):
+            return paths
+    return []
+
+
+def entry_from_index(view, index):
+    """从任意文件视图的索引取 Entry（兼容代理模型与结果模型）。"""
+    if not index.isValid():
+        return None
+    model = view.model()
+    if hasattr(model, "mapToSource"):
+        src = model.mapToSource(model.index(index.row(), 0))
+        e = src.data(Qt.UserRole) if src.isValid() else None
+    else:
+        e = index.data(Qt.UserRole)
+    return e if isinstance(e, Entry) else None
+
+
+class _FileDragViewMixin:
+    """文件视图的拖出/拖入：拖出用 uri-list，拖入落到面板或文件夹行。"""
+
+    def init_drag_view(self, pane, accept_drop=True):
+        self._drag_pane = pane
+        self._drag_accept = accept_drop
+        self.setDragEnabled(True)
+        self.setAcceptDrops(accept_drop)
+        self.setDragDropMode(QAbstractItemView.DragDrop if accept_drop
+                             else QAbstractItemView.DragOnly)
+        if accept_drop:
+            self.setDropIndicatorShown(True)
+            self.setDefaultDropAction(Qt.MoveAction)
+
+    def _drag_entries(self):
+        out, seen = [], set()
+        for idx in self.selectionModel().selectedRows():
+            if not idx.isValid() or idx.row() in seen:
+                continue
+            seen.add(idx.row())
+            e = entry_from_index(self, idx)
+            if e is not None and os.path.exists(e.path):
+                out.append(e)
+        return out
+
+    def startDrag(self, supportedActions):
+        entries = self._drag_entries()
+        if not entries:
+            return
+        md = drag_mime_data([e.path for e in entries])
+        drag = QDrag(self)
+        drag.setMimeData(md)
+        pm = sys_icon(entries[0].path, entries[0].is_dir).pixmap(32, 32)
+        if not pm.isNull():
+            drag.setPixmap(pm)
+            drag.setHotSpot(QPoint(16, 16))
+        ctrl = QGuiApplication.keyboardModifiers() & Qt.ControlModifier
+        drag.exec(Qt.CopyAction | Qt.MoveAction,
+                  Qt.CopyAction if ctrl else Qt.MoveAction)
+
+    def _drag_can_drop(self, ev):
+        if not self._drag_accept or not getattr(self._drag_pane, "main", None):
+            return False
+        return bool(paths_from_mime(ev.mimeData()))
+
+    @staticmethod
+    def _drag_modifiers(ev):
+        return (ev.modifiers() if hasattr(ev, "modifiers")
+                else QGuiApplication.keyboardModifiers())
+
+    def _drag_accept_event(self, ev):
+        # 外部拖入一律 copy：若接受 Move，资源管理器会真的删掉来源文件。
+        internal = ev.mimeData().hasFormat(_DRAG_MIME)
+        ctrl = self._drag_modifiers(ev) & Qt.ControlModifier
+        ev.setDropAction((Qt.CopyAction if ctrl else Qt.MoveAction)
+                         if internal else Qt.CopyAction)
+        ev.accept()
+
+    def dragEnterEvent(self, ev):
+        if self._drag_can_drop(ev):
+            self._drag_accept_event(ev)
+        else:
+            ev.ignore()
+
+    def dragMoveEvent(self, ev):
+        if self._drag_can_drop(ev):
+            self._drag_accept_event(ev)
+        else:
+            ev.ignore()
+
+    def dropEvent(self, ev):
+        paths = paths_from_mime(ev.mimeData())
+        if not self._drag_can_drop(ev):
+            ev.ignore()
+            return
+        pos = ev.position() if hasattr(ev, "position") else ev.pos()
+        idx = self.indexAt(QPoint(int(pos.x()), int(pos.y())))
+        target = ""
+        if idx.isValid():
+            e = entry_from_index(self, idx)
+            if e is not None and e.is_dir:
+                target = e.path
+        if not target:
+            target = self._drag_pane.current_path()
+        if not target or not os.path.isdir(target):
+            ev.ignore()
+            return
+        internal = ev.mimeData().hasFormat(_DRAG_MIME)
+        ctrl = self._drag_modifiers(ev) & Qt.ControlModifier
+        mode = "copy" if (not internal or ctrl) else "move"
+        self._drag_pane.main.drop_paths(paths, target, mode)
+        ev.acceptProposedAction()
+
+
+class _FileTableView(_FileDragViewMixin, QTableView):
+    pass
+
+
+class _FileIconView(_FileDragViewMixin, QListView):
+    pass
+
+
+class _SmartResultView(_FileDragViewMixin, QListView):
+    pass
 
 
 def drive_letters():
@@ -368,7 +525,8 @@ class FilePane(QWidget):
         tools.addWidget(self.filter_edit)
 
         # ---- 详细视图（文件表）----
-        self.table = QTableView()
+        self.table = _FileTableView()
+        self.table.init_drag_view(self)
         self.table.setModel(self.proxy)
         self.table.setSelectionBehavior(QTableView.SelectRows)
         self.table.setSelectionMode(QTableView.ExtendedSelection)
@@ -396,7 +554,8 @@ class FilePane(QWidget):
         # ---- 图标视图 ----
         self.icon_proxy = EntryIconModel(self)
         self.icon_proxy.setSourceModel(self.model)
-        self.icons = QListView()
+        self.icons = _FileIconView()
+        self.icons.init_drag_view(self)
         self.icons.setViewMode(QListView.IconMode)
         self.icons.setResizeMode(QListView.Adjust)
         self.icons.setGridSize(QSize(92, 72))
@@ -420,7 +579,8 @@ class FilePane(QWidget):
         # 智能文件夹搜索结果视图（页 2）
         from PySide6.QtGui import QStandardItemModel, QStandardItem
         self.results_model = QStandardItemModel(0, 1, self)
-        self.results_list = QListView()
+        self.results_list = _SmartResultView()
+        self.results_list.init_drag_view(self, accept_drop=False)
         self.results_list.setModel(self.results_model)
         self.results_list.setFrameShape(QListView.NoFrame)
         self.results_list.setEditTriggers(QListView.NoEditTriggers)
@@ -770,19 +930,21 @@ class FilePane(QWidget):
         return self.table if self.stack.currentIndex() == 0 else self.icons
 
     def selected_entries(self):
+        # 图标视图用的是另一套代理，必须按当前视图自己的模型映射，
+        # 否则拖放/复制会取到错误的文件。
         view = self._cur_view()
         rows = sorted({i.row() for i in view.selectionModel().selectedRows()
                        if i.isValid()})
-        return [self.proxy.mapToSource(self.proxy.index(r, 0)).data(Qt.UserRole)
-                for r in rows]
+        out = []
+        for r in rows:
+            e = entry_from_index(view, view.model().index(r, 0))
+            if e is not None:
+                out.append(e)
+        return out
 
     def current_entry(self):
         view = self._cur_view()
-        idx = view.currentIndex()
-        if not idx.isValid():
-            return None
-        e = self.proxy.mapToSource(self.proxy.index(idx.row(), 0)).data(Qt.UserRole)
-        return e
+        return entry_from_index(view, view.currentIndex())
 
     def select_single(self, entry):
         if entry is None:
@@ -1256,6 +1418,10 @@ class FileSystemTree(QWidget):
         self.tree_model.setFilter(QDir.AllDirs | QDir.NoDotAndDotDot | QDir.Drives)
         self.tree = _FsTree()
         self.tree.setModel(self.tree_model)
+        # 目录树也允许拖出到聊天窗口；QFileSystemModel 原生提供 uri-list。
+        self.tree.setDragEnabled(True)
+        self.tree.setDragDropMode(QAbstractItemView.DragOnly)
+        self.tree.setDefaultDropAction(Qt.CopyAction)
         for c in range(1, 4):
             self.tree.hideColumn(c)
         self.tree.setHeaderHidden(True)

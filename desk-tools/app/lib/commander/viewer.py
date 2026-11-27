@@ -98,6 +98,7 @@ class SearchDialog(QDialog):
         self.show_hidden = show_hidden
         self.result_path = None
         self._stop = False
+        self._searching = False
         self.setWindowTitle("搜索 — " + root)
         self.resize(700, 560)
 
@@ -107,7 +108,11 @@ class SearchDialog(QDialog):
             "名称关键字 / *.py 通配 / ext:py / size:>10mb / /正则/（空格与，分号或）")
         self.btn = QPushButton("搜索")
         self.btn.setObjectName("accent")
-        self.btn.clicked.connect(self.start)
+        # QDialog 默认按钮会在回车时同时发出 clicked，导致刚启动的搜索被立刻
+        # 当成「停止」（结果 0）。关闭 autoDefault，两条输入路径彻底分开。
+        self.btn.setAutoDefault(False)
+        self.btn.setDefault(False)
+        self.btn.clicked.connect(self.on_button_clicked)
         self.input.returnPressed.connect(self.start)
         h.addWidget(self.input, 1)
         h.addWidget(self.btn)
@@ -129,10 +134,22 @@ class SearchDialog(QDialog):
         self.item_found.connect(self._add_ui)
         self.search_done.connect(self._finish_ui)
 
+    def on_button_clicked(self):
+        """按钮单击：搜索中则停止，否则开始；与回车路径共用状态判定。"""
+        if self._searching:
+            self.stop()
+        else:
+            self.start()
+
+    def stop(self):
+        if not self._searching:
+            return
+        self._stop = True
+        self.lb.setText("搜索范围：%s    正在停止…" % self.root)
+
     def start(self):
-        if self.btn.text() == "停止":
-            self._stop = True
-            self.lb.setText("搜索范围：%s    正在停止…" % self.root)
+        # 回车连按 / 重复触发不应把刚启动的搜索当成停止
+        if self._searching:
             return
         pattern = self.input.text().strip()
         if not pattern:
@@ -143,6 +160,7 @@ class SearchDialog(QDialog):
         groups = compile_query(pattern)
         self.tree.clear()
         self._stop = False
+        self._searching = True
         self.btn.setText("停止")
         self.lb.setText("搜索范围：%s    搜索中…" % self.root)
 
@@ -178,6 +196,7 @@ class SearchDialog(QDialog):
         self.tree.addTopLevelItem(it)
 
     def _finish_ui(self, found, stopped):
+        self._searching = False
         self.btn.setText("搜索")
         self.lb.setText("搜索范围：%s    找到 %d 项%s"
                         % (self.root, found, "（已停止）" if stopped else ""))

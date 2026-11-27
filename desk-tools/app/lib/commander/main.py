@@ -943,6 +943,40 @@ class MainWindow(QMainWindow):
         if task is not None:
             task.sig.finished.connect(lambda *_: pane.refresh())
 
+    def drop_paths(self, paths, dst_dir, mode="move"):
+        """文件拖放落点：复用复制/移动队列，拒绝自嵌套与无意义的同目录操作。"""
+        if not paths or not dst_dir:
+            return
+        dst_dir = os.path.abspath(dst_dir)
+        dst = os.path.normcase(dst_dir)
+        srcs = []
+        for p in paths:
+            src = os.path.abspath(p)
+            if not os.path.exists(src):
+                continue
+            nsrc = os.path.normcase(src)
+            # 拖到自己所在目录没有意义；移进自己的子目录会把目录套进自身。
+            if nsrc == dst or os.path.normcase(os.path.dirname(src)) == dst:
+                continue
+            if mode == "move" and dst.startswith(nsrc.rstrip(os.sep) + os.sep):
+                continue
+            srcs.append(src)
+        if not srcs:
+            self.st_label.setText("拖放：目标与源相同或无有效项")
+            return
+        task = self.op.run_copy(srcs, dst_dir, mode=mode)
+        self.st_label.setText("拖放%s %d 项 → %s"
+                              % ("移动" if mode == "move" else "复制",
+                                 len(srcs), dst_dir))
+        if task is not None:
+            def _refresh_all(*_):
+                for pt in self.panes:
+                    if pt.isVisible():
+                        p = pt.current_pane()
+                        if p is not None:
+                            p.refresh()
+            task.sig.finished.connect(_refresh_all)
+
     # ---- 布局 / 视图 ------------------------------------------------------
     def _status_menu(self, pos):
         """状态栏右键：一站式视图开关（FC UiStatusBar）。"""
