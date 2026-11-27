@@ -34,6 +34,25 @@ from .viewer import QuickViewerPanel, SearchDialog, ViewerDialog
 _ASSETS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets")
 
 
+def make_app_icon():
+    """逐尺寸用 QPixmap 重建 QIcon，保证 Windows 任务栏拿到正确图标。
+
+    直接 QIcon(.ico) 在部分 Windows 环境会让任务栏退回 pythonw.exe 默认图标；
+    这里把 ico 各尺寸先取成 QPixmap 再装进新 QIcon，与另两个入口的
+    QPixmap -> QIcon 路径一致（那条路径已验证任务栏显示正常）。
+    """
+    ico_path = os.path.join(_ASSETS, "commander.ico")
+    if not os.path.exists(ico_path):
+        return QIcon()
+    src = QIcon(ico_path)
+    out = QIcon()
+    for size in (16, 20, 24, 32, 40, 48, 64, 128, 256):
+        pm = src.pixmap(size, size)
+        if not pm.isNull():
+            out.addPixmap(pm)
+    return out
+
+
 TAB_COLORS = [("", "默认"), ("#3b82f6", "蓝"), ("#34d399", "绿"), ("#f59e0b", "橙"),
               ("#f87171", "红"), ("#a78bfa", "紫"), ("#22d3ee", "青")]
 
@@ -300,9 +319,9 @@ class MainWindow(QMainWindow):
         self._watch_timer.timeout.connect(self._flush_dir_changes)
 
         # ---- 图标（打包后同样以相对路径定位，便携可用）----
-        icon_path = os.path.join(_ASSETS, "commander.ico")
-        if os.path.exists(icon_path):
-            self.setWindowIcon(QIcon(icon_path))
+        app_icon = make_app_icon()
+        if not app_icon.isNull():
+            self.setWindowIcon(app_icon)
 
         # ---- 收藏树面板（左，Alt+F 开关）----
         # 文件标签：启动时注入模型
@@ -1535,8 +1554,10 @@ def main():
         try:
             import ctypes
             ctypes.windll.kernel32.FreeConsole()
+            # v2：换 ID 迫使 Windows 为任务栏按钮重建图标缓存（旧 ID 可能
+            # 已被缓存成 pythonw.exe 的默认图标，换 ID 后重新注册）。
             ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
-                "cobyg.desktools.commander")
+                "cobyg.desktools.commander.v2")
         except Exception:
             pass
     if not _try_single_instance():
@@ -1545,10 +1566,9 @@ def main():
     app.setApplicationName("commander")
     # 主题由 MainWindow._restore() 按配置统一应用一次：避免启动阶段重复
     # setStyleSheet（约 32ms/次），light 用户也不会先闪一帧 dark。
-    icon_path = os.path.join(_ASSETS, "commander.ico")
-    if os.path.exists(icon_path):
-        from PySide6.QtGui import QColor, QIcon as _QIcon
-        app.setWindowIcon(_QIcon(icon_path))
+    app_icon = make_app_icon()
+    if not app_icon.isNull():
+        app.setWindowIcon(app_icon)
     win = MainWindow()
     win.show()
     sys.exit(app.exec())
