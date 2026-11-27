@@ -26,6 +26,9 @@ DEFAULTS = {
     "show_hidden": False,
     "single_pane": False,
     "window": {"w": 1280, "h": 800, "maximized": False},
+    # 链接文件：标准 .url 不携带自定义描述，描述单独存这张表
+    "links_dir": os.path.join(os.path.expanduser("~"), "Links"),
+    "link_notes": {},
 }
 
 
@@ -79,7 +82,7 @@ def load():
         if len(good) != len(favs):
             merged["favorites"] = good
     elif favs is not None:
-        _warn("收藏配置格式错误，已按默认收藏启动")
+        _warn("收藏配置格式错误，已按默认常用目录启动")
         merged["favorites"] = json.loads(json.dumps(DEFAULTS["favorites"]))
 
     # 收藏集格式损坏会让切换下拉/右键菜单构建时崩溃，逐项容错
@@ -90,6 +93,19 @@ def load():
     elif isinstance(sets, dict):
         merged["fav_sets"] = {k: v for k, v in sets.items() if isinstance(v, list)}
 
+    # 链接描述表损坏时忽略，避免 tooltip 组装抛异常
+    notes = merged.get("link_notes")
+    if notes is not None and not isinstance(notes, dict):
+        _warn("链接描述配置格式错误，已忽略")
+        merged["link_notes"] = {}
+    elif isinstance(notes, dict):
+        merged["link_notes"] = {k: v for k, v in notes.items()
+                                if isinstance(k, str) and isinstance(v, str)}
+    if not isinstance(merged.get("links_dir"), str):
+        # DEFAULTS 可能被测试/嵌入方替换成最小字典，不能假设键一定存在
+        merged["links_dir"] = DEFAULTS.get("links_dir") or os.path.join(
+            os.path.expanduser("~"), "Links")
+
     # panes 结构损坏同样会导致主窗口构建失败
     panes = merged.get("panes")
     if (not isinstance(panes, list) or len(panes) != 2
@@ -97,6 +113,11 @@ def load():
                    for p in panes)):
         _warn("面板配置格式错误，已按默认布局启动")
         merged["panes"] = json.loads(json.dumps(DEFAULTS["panes"]))
+
+    # 旧颜色标签 → 命名层级标签：启动时一次性迁移并落盘
+    from . import tags
+    if tags.migrate(merged):
+        save(merged)
     return merged
 
 

@@ -91,6 +91,7 @@ class OpSignals(QObject):
     started = Signal(int)                 # 总字节数
     progress = Signal(int, int)           # 已完成字节, 总字节
     file_done = Signal(str)               # 单个文件完成
+    moved = Signal(str, str)              # 移动/改名完成：旧路径, 新路径（标签路径同步钩子）
     conflict = Signal(str, str, object)   # src, dst, 回调(bool: 覆盖?)
     error = Signal(str, str, object)      # src, 错误文本, 回调(bool: 跳过?)
     status = Signal(str)                  # 阶段提示（如"正在统计文件大小"）
@@ -207,6 +208,8 @@ class OpTask(QRunnable):
                 dst = _unique_dst(dst)
         if os.path.isdir(src) and not os.path.islink(src):
             done = self._copy_tree(src, dst, done, total, delete_after=(self.mode == "move"))
+            if self.mode == "move" and os.path.isdir(dst) and not os.path.exists(src):
+                self.sig.moved.emit(src, dst)
             return done
         # 单文件
         tmp = dst + ".part"
@@ -219,6 +222,7 @@ class OpTask(QRunnable):
         os.replace(tmp, dst)
         if self.mode == "move":
             os.remove(src)
+            self.sig.moved.emit(src, dst)
         return done + os.path.getsize(dst) if os.path.isfile(dst) else done
 
     def _copy_tree(self, src, dst, done, total, delete_after=False):
@@ -304,6 +308,7 @@ class RenameTask(QRunnable):
                 try:
                     os.rename(src, dst)
                     self.sig.file_done.emit(name)
+                    self.sig.moved.emit(src, dst)
                 except OSError as exc:
                     had_error = True
                     self.sig.error.emit(name, str(exc), lambda _reply: None)
@@ -450,8 +455,10 @@ class OpRunner:
         self.widget = widget
         self.queue = queue
 
-    def run_copy(self, srcs, dst_dir, mode="copy"):
+    def run_copy(self, srcs, dst_dir, mode="copy", moved_cb=None):
         task = OpTask(srcs, dst_dir, mode)
+        if moved_cb is not None:
+            task.sig.moved.connect(moved_cb)
         if self.queue is not None:
             self.queue.add(task, "%s %d 项 → %s"
                            % ("复制" if mode == "copy" else "移动", len(srcs), dst_dir))

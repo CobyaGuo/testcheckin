@@ -24,7 +24,9 @@ from PySide6.QtGui import QColor, QIcon, QPen
 from . import icons
 
 from . import config
-from .dialogs import BatchRenameDialog, Md5Dialog
+from . import tags
+from .dialogs import (BatchRenameDialog, Md5Dialog, ExportDialog,
+                      HealthCheckDialog)
 from .operations import OpQueue, OpRunner, delete_to_recycle_bin
 from .pane import (VIEW_DETAIL, VIEW_ICONS, FilePane, FileSystemTree)
 from .queuebar import FavoritesTree, QueueBar
@@ -171,6 +173,8 @@ class PaneTabs(QTabWidget):
         w = self.widget(idx)
         path = w.current_path()
         title = self.tabText(idx)
+        if getattr(w, "_virtual_name", ""):
+            title = ""      # 虚拟标题不写进对侧 pane 的 custom_title
         color = getattr(w, "tab_color", "")
         base = os.path.basename(path) or path
         custom = "" if title == base else title
@@ -233,6 +237,10 @@ class PaneTabs(QTabWidget):
 
     def rename_tab(self, idx):
         pane = self.widget(idx)
+        if getattr(pane, "_virtual_name", ""):
+            QMessageBox.information(
+                self, "重命名标签", "虚拟视图中不能重命名标签，请先按 Esc 返回原目录。")
+            return
         new, ok = QInputDialog.getText(self, "重命名标签", "标签名（留空恢复为目录名）：",
                                        text=self.tabText(idx))
         if not ok:
@@ -256,8 +264,8 @@ class PaneTabs(QTabWidget):
         pane = self.widget(idx)
         pane.tab_lock = mode
         pane.lock_root = pane.current_path()
-        base = self.tabText(idx).replace("\U0001f512", "").strip()
-        self.setTabText(idx, ("\U0001f512" if mode else "") + base)
+        # 统一走 _retitle：虚拟态下不会把虚拟标题误当 custom_title 累积锁前缀
+        self._retitle(pane, pane.current_path())
         self.main.save_tabs()
 
     def add_pane(self, path, title="", color="", lock="", lock_root=""):
@@ -271,6 +279,7 @@ class PaneTabs(QTabWidget):
         pane.status_changed.connect(self.main.update_status)
         pane.quick_searched.connect(lambda t: self.main.quick_search_display(t))
         pane.path_changed.connect(lambda p, tp=pane: self._retitle(pane, p))
+        pane.virtual_changed.connect(lambda tp=pane: self._retitle(tp, tp.current_path()))
         pane.path_changed.connect(lambda p, tp=pane: self.main._pane_path_changed(tp, p))
         pane.path_changed.connect(lambda p, tp=pane: self.main._sync_dir_watch(tp, p))
         pane.focus_requested.connect(lambda tp=pane: self.main._pane_focused(tp))
@@ -289,12 +298,24 @@ class PaneTabs(QTabWidget):
         self.main.save_tabs()
 
     def _retitle(self, pane, path):
-        pre = "\U0001f512" if getattr(pane, "tab_lock", "") else ""
-        if getattr(pane, "custom_title", ""):
-            self.setTabText(self.indexOf(pane), pre + pane.custom_title)
+        idx = self.indexOf(pane)
+        if idx < 0:
             return
-        self.setTabText(self.indexOf(pane), pre + (os.path.basename(path) or path or "…"))
-        self.setTabToolTip(self.indexOf(pane), path)
+        pre = "\U0001f512" if getattr(pane, "tab_lock", "") else ""
+        # 虚拟视图接管标题：🔍 搜索: xxx / 🏷 标签名；锁定前缀照常叠加，
+        # 恢复真实目录时下面的原逻辑会完整还原（不动 custom_title）。
+        vname = getattr(pane, "_virtual_name", "")
+        if vname:
+            mark = "🔍 " if getattr(pane, "_virtual_kind", "") == "smart" else "🏷 "
+            self.setTabText(idx, pre + mark + vname)
+            self.setTabToolTip(idx, "虚拟视图 — Esc 返回原目录：" +
+                               getattr(pane, "_return_path", ""))
+            return
+        if getattr(pane, "custom_title", ""):
+            self.setTabText(idx, pre + pane.custom_title)
+            return
+        self.setTabText(idx, pre + (os.path.basename(path) or path or "…"))
+        self.setTabToolTip(idx, path)
 
     def _close_tab(self, idx):
         if self.count() <= 1:
@@ -326,6 +347,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("Commander — 文件管理")
         self.cfg = config.load()
+        tags.set_registry(self.cfg)
         self.clip = []        # 剪贴板路径
         self.clip_mode = None # "copy" | "cut"
         self.op_queue = OpQueue()
@@ -348,16 +370,18 @@ class MainWindow(QMainWindow):
         # 窗口继承应用图标；不要在 __init__ 里再构造第二份 QIcon。
 
         # ---- 收藏树面板（左，Alt+F 开关）----
-        # 文件标签：启动时注入模型
+        # 文件标签：启动时注入模型（命名标签→颜色数组，色点渲染不变）
         from .fsmodel import set_file_tags
-        set_file_tags(self.cfg.get("file_tags", {}))
+        set_file_tags(tags.colors_map(self.cfg))
 
         self.fav_tree = FavoritesTree(self.cfg)
         self.fav_tree.navigate.connect(self.navigate_favorite)
         self.fav_tree.smart_requested.connect(self.smart_open)
+        self.fav_tree.tag_requested.connect(self.open_tag)
         self.fav_tree.open_file.connect(self._shell_open)
         self.fav_tree.changed.connect(self._rebuild_fav_bar)
         self.fav_tree.changed.connect(self._sync_fav_menu)
+        self.fav_tree.changed.connect(self._refresh_tag_view)
 
         # ---- 文件系统树：全局唯一，左右两栏共用，跟活动面板走 ----
         self.fs_tree = FileSystemTree()
@@ -512,6 +536,7 @@ class MainWindow(QMainWindow):
 
         m_file = mb.addMenu("文件")
         m_file.addAction("新建文件夹\tF7", self.new_folder)
+        m_file.addAction("新建链接…", self.new_link)
         m_file.addSeparator()
         m_file.addAction("新建智能文件夹…", self.add_smart_folder)
         m_file.addAction("压缩为 ZIP…", self.zip_selected)
@@ -561,6 +586,10 @@ class MainWindow(QMainWindow):
         m_tools.addAction("搜索\tF9", self.search_here)
         m_tools.addAction("计算 MD5", self.calc_md5)
         m_tools.addSeparator()
+        m_tag_fav = m_tools.addMenu("标签与收藏")
+        m_tag_fav.addAction("标签与收藏体检…", self.health_check)
+        m_tag_fav.addAction("汇总导出…", self.export_summary)
+        m_tools.addSeparator()
         m_tools.addAction("刷新\tCtrl+R", self.refresh_all)
 
     def _sync_fav_menu(self):
@@ -577,12 +606,14 @@ class MainWindow(QMainWindow):
 
     # ---- 初始化辅助 ------------------------------------------------------
     def _rebuild_fav_bar(self):
+        """工具栏只放常用目录与收藏集第一层目录；更深层用下拉展开。"""
         while self.fav_bar.count():
             it = self.fav_bar.takeAt(0)
             if it.widget():
                 it.widget().deleteLater()
         from .fsmodel import fav_icon
-        from .queuebar import _emoji_icon  # noqa: F401 （保留兼容）
+        from . import favsets as _sets
+        # 常用目录（桌面/下载/文档等）是特殊入口，独立于收藏集
         for fav in self.cfg.get("favorites", []):
             if not isinstance(fav, dict) or not fav.get("name") or not fav.get("path"):
                 continue
@@ -596,9 +627,17 @@ class MainWindow(QMainWindow):
             b.customContextMenuRequested.connect(
                 lambda pos, btn=b, f=fav: self._fav_bar_menu(pos, btn, f))
             self.fav_bar.addWidget(b)
+        # 收藏集第一层目录：点击后下拉显示子集与收藏项（浏览器书签行为）
+        for key in _sets.top_sets(self.cfg):
+            b = QPushButton(" " + _sets.short_label(key) + "  ▾")
+            b.setFlat(True)
+            b.setToolTip("收藏集「%s」：点击展开子集与收藏项" % _sets.short_label(key))
+            b.clicked.connect(lambda _=False, k=key, btn=b: self._popup_set_menu(k, btn))
+            self.fav_bar.addWidget(b)
         add = QPushButton("＋ 添加收藏")
         add.setFlat(True)
-        add.clicked.connect(self.add_favorite)
+        add.setToolTip("选择要添加到的常用目录或收藏集")
+        add.clicked.connect(lambda: self._add_fav_target_menu(add))
         self.fav_bar.addWidget(add)
         manage = QPushButton("收藏集")
         manage.setFlat(True)
@@ -611,11 +650,79 @@ class MainWindow(QMainWindow):
         """工具栏收藏按钮右键 → 与收藏树共用同一套编辑/移动/删除菜单。"""
         self.fav_tree.popup_menu(fav, "", btn.mapToGlobal(pos), self)
 
+    def _fill_set_menu(self, menu, key):
+        """把收藏集的子集与收藏项填进下拉菜单；只需在根菜单接 triggered。"""
+        from . import favsets as _sets
+        for child in _sets.children(self.cfg, key):
+            sub = menu.addMenu(_sets.short_label(child))
+            self._fill_set_menu(sub, child)
+        for fav in _sets.items(self.cfg, key):
+            if not isinstance(fav, dict):
+                continue
+            path = str(fav.get("path") or "").strip()
+            if not path:
+                continue
+            name = str(fav.get("name") or "").strip() or os.path.basename(path)
+            act = menu.addAction(name)
+            act.setData(path)
+            act.setToolTip(path)
+        if not menu.actions():
+            act = menu.addAction("（空收藏集）")
+            act.setEnabled(False)
+
+    def _build_set_popup_menu(self, key):
+        """构建收藏集下拉菜单；返回 (menu, on_pick)，测试与 exec 共用。"""
+        from PySide6.QtWidgets import QMenu
+        menu = QMenu(self)
+        self._fill_set_menu(menu, key)
+
+        def on_pick(act):
+            if act is not None and act.data():
+                self.navigate_favorite(act.data())
+
+        return menu, on_pick
+
+    def _popup_set_menu(self, key, btn):
+        """收藏集第一层按钮：下拉展示该集合内容，点击条目导航。"""
+        from PySide6.QtCore import QPoint
+        menu, on_pick = self._build_set_popup_menu(key)
+        on_pick(menu.exec(btn.mapToGlobal(QPoint(0, btn.height()))))
+
+    def _build_add_target_menu(self):
+        """添加收藏的目标菜单：常用目录 + 任意层级的收藏集。"""
+        from PySide6.QtWidgets import QMenu
+        from . import favsets as _sets
+        menu = QMenu(self)
+        act = menu.addAction("常用目录")
+        act.setData("__common__")
+        menu.addSeparator()
+        for key, label in _sets.all_sets(self.cfg):
+            act = menu.addAction(label)
+            act.setData(key)
+        return menu
+
+    def _handle_add_target(self, act):
+        if act is None:
+            return
+        key = act.data()
+        if key == "__common__":
+            self.add_favorite()
+        else:
+            self.fav_tree.add_current_dir(key)
+
+    def _add_fav_target_menu(self, btn):
+        from PySide6.QtCore import QPoint
+        menu = self._build_add_target_menu()
+        self._handle_add_target(menu.exec(btn.mapToGlobal(QPoint(0, btn.height()))))
+
     def open_fav_manager(self):
-        """从工具栏打开收藏树并聚焦收藏集下拉，便于集中管理。"""
+        """从工具栏打开收藏树并展开「收藏集」分区。"""
         if not self.fav_tree.isVisible():
             self.toggle_fav_tree()
-        self.fav_tree.set_combo.setFocus()
+        root = self.fav_tree._find_node(
+            self.fav_tree.tree.invisibleRootItem(), "root:sets")
+        if root is not None:
+            root.setExpanded(True)
 
     def _shortcuts(self):
         sc = [
@@ -629,6 +736,7 @@ class MainWindow(QMainWindow):
             ("Ctrl+C", self.clipboard_copy), ("Ctrl+X", self.clipboard_cut),
             ("Ctrl+V", self.paste_active), ("Ctrl+R", self.refresh_all),
             ("Ctrl+.", self.toggle_hidden), ("Ctrl+T", self.new_tab),
+            ("T", self.popup_tag_menu),
             ("Ctrl+W", self.close_tab), ("Ctrl+H", self.toggle_layout),
             ("Alt+1", lambda: self._focus_pane(0)), ("Alt+2", lambda: self._focus_pane(1)),
             ("Ctrl+Q", self.toggle_quick_viewer), ("Alt+F", self.toggle_fav_tree),
@@ -641,6 +749,28 @@ class MainWindow(QMainWindow):
         for key, fn in sc:
             s = QShortcut(QKeySequence(key), self)
             s.activated.connect(fn)
+        # Esc：仅在虚拟视图态返回原目录；输入框/弹窗有焦点时让给它们
+        esc = QShortcut(QKeySequence(Qt.Key_Escape), self)
+        esc.activated.connect(self.exit_virtual_view)
+
+    def exit_virtual_view(self):
+        """Esc 返回：复用「T 快捷键」的输入框检测模式，避免抢走输入字符。"""
+        from PySide6.QtWidgets import QPlainTextEdit, QTextEdit
+        w = QApplication.focusWidget()
+        if isinstance(w, (QLineEdit, QPlainTextEdit, QTextEdit)):
+            return
+        if QApplication.activePopupWidget() or QApplication.activeModalWidget():
+            return
+        pane = self.active_pane()
+        if pane is not None and getattr(pane, "_virtual_name", ""):
+            self.return_from_virtual(pane)
+
+    def return_from_virtual(self, pane):
+        """统一返回入口：面包屑末段 / 返回按钮 / Esc 全部等效。返回豁免锁定。"""
+        target = getattr(pane, "_return_path", "") or pane.current_path()
+        if not target or not os.path.isdir(target):
+            target = os.path.expanduser("~")
+        pane.navigate(target, bypass_lock=True)
 
     def _restore(self):
         panes_cfg = self.cfg.get("panes", config.load()["panes"])
@@ -820,7 +950,8 @@ class MainWindow(QMainWindow):
         if not sel or not dst or not dst.current_path():
             return
         srcs = [e.path for e in sel]
-        task = self.op.run_copy(srcs, dst.current_path(), mode="copy")
+        task = self.op.run_copy(srcs, dst.current_path(), mode="copy",
+                                moved_cb=self._on_paths_moved)
         if task is not None:
             task.sig.finished.connect(lambda *_: (pane.refresh(), dst.refresh()))
 
@@ -831,7 +962,8 @@ class MainWindow(QMainWindow):
         if not sel or not dst or not dst.current_path():
             return
         srcs = [e.path for e in sel]
-        task = self.op.run_copy(srcs, dst.current_path(), mode="move")
+        task = self.op.run_copy(srcs, dst.current_path(), mode="move",
+                                moved_cb=self._on_paths_moved)
         if task is not None:
             task.sig.finished.connect(lambda *_: (pane.refresh(), dst.refresh()))
 
@@ -870,6 +1002,8 @@ class MainWindow(QMainWindow):
         if box.clickedButton() is not yes:
             return
         if delete_to_recycle_bin([e.path for e in sel]):
+            for e in sel:
+                self._on_paths_moved(e.path, None)
             pane.refresh()
         else:
             QMessageBox.warning(self, "删除失败", "回收站操作失败（非 Windows 或权限不足）。")
@@ -896,6 +1030,7 @@ class MainWindow(QMainWindow):
         if box.clickedButton() is not yes:
             return
         task = self.op.run_purge([e.path for e in sel])
+        task.sig.file_done.connect(lambda p: self._on_paths_moved(p, None))
         task.sig.finished.connect(lambda *_: pane.refresh())
 
     def rename_selected(self):
@@ -906,8 +1041,10 @@ class MainWindow(QMainWindow):
         new, ok = QInputDialog.getText(self, "重命名", "新名称：", text=e.name)
         if not ok or not new.strip() or new == e.name:
             return
+        dst = os.path.join(os.path.dirname(e.path), new.strip())
         try:
-            os.rename(e.path, os.path.join(os.path.dirname(e.path), new.strip()))
+            os.rename(e.path, dst)
+            self._on_paths_moved(e.path, dst)
         except OSError as exc:
             QMessageBox.warning(self, "重命名失败", str(exc))
         pane.refresh()
@@ -1002,7 +1139,8 @@ class MainWindow(QMainWindow):
         if not self.clip or not pane.current_path():
             return
         task = self.op.run_copy(list(self.clip), pane.current_path(),
-                                mode="move" if self.clip_mode == "cut" else "copy")
+                                mode="move" if self.clip_mode == "cut" else "copy",
+                                moved_cb=self._on_paths_moved)
         if self.clip_mode == "cut":
             self.clip = []
         if task is not None:
@@ -1029,7 +1167,8 @@ class MainWindow(QMainWindow):
         if not srcs:
             self.st_label.setText("拖放：目标与源相同或无有效项")
             return
-        task = self.op.run_copy(srcs, dst_dir, mode=mode)
+        task = self.op.run_copy(srcs, dst_dir, mode=mode,
+                                moved_cb=self._on_paths_moved)
         self.st_label.setText("拖放%s %d 项 → %s"
                               % ("移动" if mode == "move" else "复制",
                                  len(srcs), dst_dir))
@@ -1213,32 +1352,283 @@ class MainWindow(QMainWindow):
         v.addStretch(1)
         return w
 
-    # ---- 标签与智能文件夹 ------------------------------------------------
-    def tag_entry(self, color):
-        """给活动面板当前选中项加/移除标签（色点叠加在图标上）。"""
-        from . import config, fsmodel
-        pane = self.active_pane()
-        e = pane.current_entry()
-        if not e:
+    # ---- 命名层级标签与智能文件夹 ----------------------------------------
+    def _selected_tag_paths(self, pane=None):
+        pane = pane or self.active_pane()
+        return [e.path for e in pane.selected_entries()]
+
+    def _fill_tag_menu(self, menu, prefix, paths, mapping):
+        """按 "/" 层级递归填充可勾选标签菜单（与收藏树分组一致的思路）。"""
+        defs = self.cfg.get("tag_defs") or {}
+        for name in sorted(defs):
+            if prefix and not name.startswith(prefix):
+                continue
+            rel = name[len(prefix):] if prefix else name
+            info = defs.get(name) or {}
+            color = info.get("color") or "#98a0ac"
+            if "/" in rel:
+                seg = rel.split("/", 1)[0]
+                full = prefix + seg
+                sub = menu.addMenu(seg)
+                sub.setIcon(icons.color_dot(color) if full in defs else icons.mac_folder())
+                self._fill_tag_menu(sub, full + "/", paths, mapping)
+            else:
+                act = menu.addAction(icons.color_dot(color), rel)
+                # 用 objectName 标识，避免依赖 exec 返回值的 Python 对象身份
+                act.setObjectName("tag:" + name)
+                act.setCheckable(True)
+                act.setChecked(bool(paths) and all(
+                    name in tags.names_for(self.cfg, p) for p in paths))
+                # 打标时就能看到"这个标签是干嘛的"
+                act.setToolTip(tags.note_tooltip(self.cfg, name))
+                mapping[act] = name
+
+    def build_tag_menu(self, pane=None, parent=None):
+        """构建文件右键/T 快捷键共用的标签菜单；返回 QMenu（不 exec）。
+
+        菜单自身连接 triggered：作为文件右键的子菜单（pane.py）或快捷键 T
+        的独立菜单弹出时，点击统一走 handle_tag_menu_action，避免子菜单
+        场景因缺少 exec 返回值处理而「点了没反应」。
+        """
+        menu = QMenu("标签", parent or self)
+        menu.setIcon(icons.icon("tag"))
+        paths = self._selected_tag_paths(pane)
+        mapping = {}
+        self._fill_tag_menu(menu, "", paths, mapping)
+        menu.addSeparator()
+        new_act = menu.addAction("新建标签…")
+        new_act.setObjectName("tag:__new__")
+        # QAction→标签名映射挂在菜单对象上，兼容既有测试与外部调用
+        menu._tag_map = mapping
+        menu._tag_new = new_act
+        menu._tag_paths = paths
+        menu.triggered.connect(lambda act: self.handle_tag_menu_action(menu, act))
+        return menu
+
+    def handle_tag_menu_action(self, menu, act):
+        """模拟菜单点击（triggered / 测试 / exec 后的统一入口）。"""
+        if act is None or menu is None:
             return
-        tags = dict(self.cfg.get("file_tags", {}))
-        if color is None:
-            tags.pop(e.path, None)
-        else:
-            lst = list(tags.get(e.path, []))
-            if color not in lst:
-                lst.append(color)
-            tags[e.path] = lst
-        self.cfg["file_tags"] = tags
+        # 优先按 objectName 识别：exec 返回的 QAction 与 addAction 返回的
+        # Python 包装对象身份可能不同，过去用 is 比较会漏掉「新建标签」。
+        key = act.objectName() or ""
+        if key == "tag:__new__" or act is getattr(menu, "_tag_new", None):
+            return self.new_tag_for_paths(getattr(menu, "_tag_paths", []))
+        name = key[4:] if key.startswith("tag:") else None
+        if not name:
+            name = getattr(menu, "_tag_map", {}).get(act)
+        if name:
+            return self.toggle_tag_paths(getattr(menu, "_tag_paths", []), name)
+
+    def popup_tag_menu(self, pane=None, pos=None):
+        """快捷键 T：在鼠标位置弹出与右键相同的标签菜单。"""
+        from PySide6.QtGui import QCursor
+        from PySide6.QtWidgets import QLineEdit, QPlainTextEdit, QTextEdit
+        w = QApplication.focusWidget()
+        if isinstance(w, (QLineEdit, QPlainTextEdit, QTextEdit)):
+            return                     # 输入框里按 T 就是普通字符
+        menu = self.build_tag_menu(pane, self)
+        # triggered 已连接到统一入口，这里不能再按 exec 返回值处理一次，
+        # 否则同一次点击会被执行两遍。
+        menu.exec(pos or QCursor.pos())
+
+    def toggle_tag_paths(self, paths, name):
+        """批量勾选/取消标签（只改配置，不碰文件）。"""
+        if not paths or not tags.clean_name(name):
+            return
+        for p in paths:
+            tags.toggle(self.cfg, p, name)
+        self._commit_tags()
+
+    def new_tag_for_paths(self, paths):
+        name, ok = QInputDialog.getText(
+            self, "新建标签", "标签名（可含 /，如 用例/接口）：")
+        name = tags.clean_name(name) if ok else ""
+        if not name:
+            return
+        if name not in (self.cfg.get("tag_defs") or {}):
+            tags.create_tag(self.cfg, name)
+        for p in paths:
+            tags.add(self.cfg, p, name)
+        self._commit_tags()
+
+    def edit_tag_note(self, name):
+        """标签描述编辑（多行输入）；更新日期随描述一起落盘。"""
+        if name not in (self.cfg.get("tag_defs") or {}):
+            return False
+        text, ok = QInputDialog.getMultiLineText(
+            self, "编辑标签描述", "标签「%s」的描述：" % name,
+            tags.note_for(self.cfg, name))
+        if not ok:
+            return False
+        tags.set_note(self.cfg, name, text)
+        self._commit_tags()
+        return True
+
+    def new_link(self):
+        """文件菜单：新建链接（标准 .url 文件 + link_notes 描述）。"""
+        from .dialogs import NewLinkDialog
+        dlg = NewLinkDialog(self, self.cfg)
+        if not dlg.exec():
+            return None
+        values = dlg.values()
+        if not values["name"] or not values["url"]:
+            QMessageBox.warning(self, "新建链接", "名称和 URL 不能为空。")
+            return None
+        if "://" not in values["url"] and not values["url"].lower().startswith(
+                ("mailto:", "tel:", "about:", "data:")):
+            QMessageBox.warning(self, "新建链接", "URL 不完整，请包含协议（如 https://）。")
+            return None
+        path = self.create_link_file(values["name"], values["url"],
+                                     values["note"], values["directory"],
+                                     values["tags"])
+        if path:
+            keep_going = bool(values.get("keep_going"))
+            if not keep_going:
+                self.active_pane().navigate(os.path.dirname(path))
+            self.st_label.setText("已创建链接：%s%s" % (
+                os.path.basename(path), "（停留原目录）" if keep_going else ""))
+        return path
+
+    def create_link_file(self, name, url, note="", directory=None, tag_names=None):
+        """纯逻辑入口：写 .url、登记描述、挂标签、落盘并刷新视图。"""
+        path = tags.save_link(self.cfg, name, url, note, directory=directory)
+        self.cfg["links_dir"] = os.path.dirname(path)
+        for tag_name in (tag_names or []):
+            clean = tags.clean_name(tag_name)
+            if not clean:
+                continue
+            if clean not in (self.cfg.get("tag_defs") or {}):
+                tags.create_tag(self.cfg, clean)
+            tags.add(self.cfg, path, clean)
+        self._commit_tags()
+        return path
+
+    def open_tag(self, name):
+        """点击收藏树标签：当前面板聚合展示全部命中项（零目录扫描）。"""
+        self.active_pane().show_tag(name, self.cfg)
+        self.st_label.setText("虚拟视图：标签聚合 %s（Esc 返回原目录）" % name)
+
+    def _refresh_tag_view(self):
+        """标签配置变更后，重算所有正在显示的聚合视图。"""
+        for pt in self.panes:
+            for i in range(pt.count()):
+                pane = pt.widget(i)
+                if getattr(pane, "_result_mode", "") == "tag" and pane._tag_name:
+                    pane.show_tag(pane._tag_name, self.cfg)
+
+    def _commit_tags(self):
+        """标签改动统一落盘 + 刷新图标/收藏树计数/聚合视图。"""
+        from . import config, fsmodel
         config.save(self.cfg)
-        fsmodel.set_file_tags(tags)
-        pane.refresh()
+        fsmodel.set_file_tags(tags.colors_map(self.cfg))
+        self.fav_tree.reload()
+        self._refresh_tag_view()
+        for pt in self.panes:
+            for i in range(pt.count()):
+                pane = pt.widget(i)
+                if getattr(pane, "stack", None) and pane.stack.currentIndex() != 2:
+                    pane.refresh()
+
+    def manage_tag_dialog(self, name):
+        """改名 / 改色 / 删除标签；删除只摘标签，绝不动文件。"""
+        from .dialogs import TagManagerDialog
+        info = (self.cfg.get("tag_defs") or {}).get(name)
+        if not info:
+            return
+        dlg = TagManagerDialog(name, info.get("color"), self,
+                               note=tags.note_for(self.cfg, name))
+        if not dlg.exec():
+            return
+        if dlg.result_action == "delete":
+            if QMessageBox.question(self, "删除标签",
+                                    "删除标签「%s」及其子标签？只摘除标签，不会删除文件。" % name
+                                    ) == QMessageBox.Yes:
+                tags.delete_tag(self.cfg, name)
+                self._commit_tags()
+            return
+        new = tags.clean_name(dlg.name_edit.text())
+        color = dlg.color_combo.currentData()
+        if not new:
+            return
+        if new != name:
+            if not tags.rename_tag(self.cfg, name, new):
+                QMessageBox.warning(self, "改名失败", "标签名无效或已存在。")
+                return
+        tags.set_color(self.cfg, new, color)
+        tags.set_note(self.cfg, new, dlg.note_edit.toPlainText())
+        self._commit_tags()
+
+    def clean_ghost_tags(self, name=None):
+        """清理目标标签（或全部）下已不存在文件的标签记录。"""
+        n = tags.clean_ghosts(self.cfg, name)
+        if n:
+            self._commit_tags()
+        self.st_label.setText("已清理 %d 条失效标签记录" % n)
+        return n
+
+    def health_check(self):
+        """标签 + 收藏统一体检：勾选清理失效记录（不删真实文件）。"""
+        from . import maintenance
+        rows = maintenance.scan_invalid(self.cfg)
+        stat = maintenance.summary(self.cfg, invalid=rows)
+        dlg = HealthCheckDialog(self.cfg, rows, stat, self)
+        if not dlg.exec():
+            return 0
+        picked = dlg.selected_rows()
+        if not picked:
+            self.st_label.setText("体检完成：未勾选任何记录")
+            return 0
+        removed = maintenance.clean_selected(self.cfg, picked)
+        self._commit_tags()
+        self._rebuild_fav_bar()
+        self._sync_fav_menu()
+        n = removed["tag"] + removed["fav"]
+        self.st_label.setText("已清理 %d 条失效记录（标签 %d / 收藏 %d）"
+                              % (n, removed["tag"], removed["fav"]))
+        return removed
+
+    def export_summary(self):
+        """汇总导出：Markdown（人读）+ JSON（全量快照），带时间戳。"""
+        from datetime import datetime
+        from . import maintenance
+
+        dlg = ExportDialog(self.cfg, self)
+        if not dlg.exec():
+            return []
+        v = dlg.values()
+        directory = v.get("dir") or tags.links_dir(self.cfg)
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        written = []
+        try:
+            os.makedirs(directory, exist_ok=True)
+            if v.get("markdown"):
+                p = os.path.join(directory, "commander汇总_%s.md" % stamp)
+                with open(p, "w", encoding="utf-8", newline="") as fh:
+                    fh.write(maintenance.export_markdown(self.cfg))
+                written.append(p)
+            if v.get("json"):
+                p = os.path.join(directory, "commander汇总_%s.json" % stamp)
+                with open(p, "w", encoding="utf-8", newline="") as fh:
+                    fh.write(maintenance.export_json(self.cfg))
+                written.append(p)
+        except OSError as e:
+            QMessageBox.warning(self, "导出失败", str(e))
+            return []
+        self.st_label.setText("已导出 %d 份：%s" % (
+            len(written), "、".join(os.path.basename(p) for p in written)))
+        return written
+
+    def _on_paths_moved(self, old, new):
+        """文件操作管道钩子：移动/改名后同步标签路径，删除(new=None)则摘除。"""
+        if tags.apply_path_changes(self.cfg, {old: new}):
+            self._commit_tags()
 
     def smart_open(self, sf):
         """在活动面板打开智能文件夹（递归搜索结果）。"""
-        self.active_pane().show_smart(sf.get("name", ""),
-                                      sf.get("scope", ""),
-                                      sf.get("query", ""))
+        name = sf.get("name", "")
+        self.active_pane().show_smart(name, sf.get("scope", ""), sf.get("query", ""))
+        self.st_label.setText("虚拟视图：智能搜索 %s（Esc 返回原目录）" % name)
 
     def add_smart_folder(self):
         self.fav_tree._smart_dialog()
@@ -1486,8 +1876,10 @@ class MainWindow(QMainWindow):
         sel_model = view.selectionModel()
         from PySide6.QtCore import QItemSelection, QItemSelectionRange
         sel = QItemSelection()
-        for r in range(pane.proxy.rowCount()):
-            sel.append(QItemSelectionRange(pane.proxy.index(r, 0)))
+        model = view.model()
+        for r in range(model.rowCount()):
+            if model.index(r, 0).data(Qt.UserRole) is not None:
+                sel.append(QItemSelectionRange(model.index(r, 0)))
         sel_model.select(sel, sel_model.SelectionFlag.Toggle)
 
     def batch_rename(self):

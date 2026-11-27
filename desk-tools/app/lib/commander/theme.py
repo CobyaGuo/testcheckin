@@ -53,6 +53,11 @@ QLineEdit, QComboBox, QSpinBox {
     selection-background-color: #3b82f6;
 }
 QLineEdit:focus, QComboBox:focus, QSpinBox:focus { border-color: #3b82f6; }
+QPlainTextEdit {
+    background: #1a1d26; color: #c3c9d8;
+    border: 1px solid #2c3040; border-radius: 7px;
+    padding: 4px 8px; font-size: 11px;
+}
 QComboBox::drop-down { border: 0; width: 18px; }
 QComboBox QAbstractItemView {
     background: #242836; border: 1px solid #2c3040;
@@ -130,6 +135,10 @@ QMessageBox { background: #20242e; }
 QCheckBox, QRadioButton { background: transparent; color: #c6ccda; spacing: 5px; font-size: 11px; }
 QToolButton#upStrip { background: #20242e; border: 0; color: #6f7788; font-size: 10px; padding: 0; }
 QToolButton#upStrip:hover { background: #263148; color: #7cb0ff; }
+/* 虚拟视图（智能搜索 / 标签聚合）：地址栏用低调的区别色，不抢目录标识 */
+QToolButton[virtual="true"] { color: #7cb0ff; background: rgba(59,130,246,0.10); border-radius: 4px; }
+QToolButton[virtual="true"]:disabled { color: #5f86bd; background: transparent; }
+QToolButton[virtual="true"]:hover { color: #a9ccff; background: rgba(59,130,246,0.18); }
 QPlainTextEdit#viewerText {
     background: #181b22; border: 0; color: #c6ccda;
     font-family: Consolas, monospace; font-size: 11px;
@@ -209,6 +218,11 @@ QLineEdit, QComboBox, QSpinBox {
     selection-background-color: #3b82f6; selection-color: #ffffff;
 }
 QLineEdit:focus, QComboBox:focus, QSpinBox:focus { border-color: #3b82f6; }
+QPlainTextEdit {
+    background: #ffffff; color: #2a2e3a;
+    border: 1px solid #c9cdd8; border-radius: 7px;
+    padding: 4px 8px; font-size: 11px;
+}
 QComboBox::drop-down { border: 0; width: 18px; }
 QComboBox QAbstractItemView {
     background: #ffffff; border: 1px solid #c9cdd8;
@@ -282,6 +296,10 @@ QMessageBox { background: #f4f5f9; }
 QCheckBox, QRadioButton { background: transparent; color: #3a3f4d; spacing: 5px; font-size: 11px; }
 QToolButton#upStrip { background: #dde2ec; border: 0; color: #6a7080; font-size: 10px; padding: 0; }
 QToolButton#upStrip:hover { background: #d6e4fc; color: #1f2430; }
+/* 虚拟视图（智能搜索 / 标签聚合）：浅色下用低饱和蓝，和目录段明确区分 */
+QToolButton[virtual="true"] { color: #1d4ed8; background: #e3ecfd; border-radius: 4px; }
+QToolButton[virtual="true"]:disabled { color: #4569a8; background: transparent; }
+QToolButton[virtual="true"]:hover { color: #143b9c; background: #d6e4fc; }
 QPlainTextEdit#viewerText {
     background: #ffffff; border: 0; color: #2a2e3a;
     font-family: Consolas, monospace; font-size: 11px;

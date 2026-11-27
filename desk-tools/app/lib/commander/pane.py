@@ -9,7 +9,7 @@ from PySide6.QtCore import (QDir, QMetaObject, QModelIndex, QPoint, Q_ARG,
                             QByteArray, QMimeData, QUrl,
                             QRunnable, QSize, Qt, QThreadPool, QTimer, Signal, Slot)
 from PySide6.QtGui import (QAction, QDrag, QGuiApplication, QColor, QPainter, QPen,
-                           QStandardItem)
+                           QStandardItem, QStandardItemModel)
 from PySide6.QtWidgets import QListView
 from . import icons
 from PySide6.QtWidgets import (QAbstractItemView, QApplication, QComboBox, QCompleter, QFileDialog,
@@ -20,7 +20,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QApplication, QComboBox, QComp
                                QTreeView, QVBoxLayout, QWidget)
 
 from .fsmodel import (COL_NAME, COL_SIZE, COL_TYPE, COL_MTIME, Entry, FsModel,
-                      FsProxy, sys_icon)
+                      FsProxy, _fmt_size, sys_icon)
 
 VIEW_DETAIL, VIEW_ICONS = "detail", "icons"
 
@@ -63,7 +63,11 @@ def paths_from_mime(md):
 
 
 def entry_from_index(view, index):
-    """从任意文件视图的索引取 Entry（兼容代理模型与结果模型）。"""
+    """从任意文件视图的索引取 Entry（兼容代理模型与结果模型）。
+
+    结果视图有多列且 Entry 只挂在首列：无论当前点在哪一列，都先映射到
+    第 0 列再取，否则点「大小 / 修改时间」列时打开、右键都会失效。
+    """
     if not index.isValid():
         return None
     model = view.model()
@@ -71,7 +75,7 @@ def entry_from_index(view, index):
         src = model.mapToSource(model.index(index.row(), 0))
         e = src.data(Qt.UserRole) if src.isValid() else None
     else:
-        e = index.data(Qt.UserRole)
+        e = model.index(index.row(), 0).data(Qt.UserRole)
     return e if isinstance(e, Entry) else None
 
 
@@ -91,7 +95,9 @@ class _FileDragViewMixin:
 
     def _drag_entries(self):
         out, seen = [], set()
-        for idx in self.selectionModel().selectedRows():
+        # selectedRows() 只在整行被选中时返回行（编程式 select(index) 不算），
+        # 用 selectedIndexes() 兼容两列表格与单列图标视图。
+        for idx in self.selectionModel().selectedIndexes():
             if not idx.isValid() or idx.row() in seen:
                 continue
             seen.add(idx.row())
@@ -177,7 +183,40 @@ class _FileIconView(_FileDragViewMixin, QListView):
     pass
 
 
-class _SmartResultView(_FileDragViewMixin, QListView):
+class _ResultItemModel(QStandardItemModel):
+    """搜索/标签聚合结果模型：按表头排序，提示行（无 Entry）永远沉底。"""
+
+    def sort(self, column, order=Qt.AscendingOrder):
+        data_rows, tip_rows = [], []
+        # 从下往上 takeRow，保证同 key 的原始先后顺序稳定
+        for r in reversed(range(self.rowCount())):
+            row = self.takeRow(r)
+            e = row[0].data(Qt.UserRole) if row else None
+            if isinstance(e, Entry):
+                ghost = bool(row[0].data(Qt.UserRole + 5))
+                data_rows.append((e, row, ghost))
+            else:
+                tip_rows.append(row)
+        keys = {
+            0: lambda e: (not e.is_dir, e.name.lower()),
+            1: lambda e: (os.path.dirname(e.path).lower(), e.name.lower()),
+            2: lambda e: (e.is_dir, e.size, e.name.lower()),
+            3: lambda e: (e.mtime, e.name.lower()),
+        }
+        key = keys.get(column, keys[3])
+        data_rows.sort(key=lambda pair: key(pair[0]),
+                       reverse=(order == Qt.DescendingOrder))
+        # 失效项无论按哪一列、升序还是降序都沉在有效项之后
+        ordered = ([pair for pair in data_rows if not pair[2]]
+                   + [pair for pair in data_rows if pair[2]])
+        for _e, row, _ghost in ordered:
+            self.appendRow(row)
+        for row in reversed(tip_rows):
+            self.appendRow(row)
+
+
+class _SmartResultView(_FileDragViewMixin, QTableView):
+    """搜索/标签聚合结果：文件名 + 所在目录 + 大小 + 修改时间，共用拖出逻辑。"""
     pass
 
 
@@ -255,6 +294,7 @@ class CrumbBar(QWidget):
     """
     crumb_clicked = Signal(str)
     edit_requested = Signal()
+    virtual_return_clicked = Signal()   # 虚拟视图末段：返回进入前的真实目录
 
     MAX_SEGMENTS = 5          # 超过则折叠中间段（保留盘符 + 末 3 段）
     MAX_SEGMENT_PX = 132      # 单段按钮最大宽度，超出 elide
@@ -265,15 +305,77 @@ class CrumbBar(QWidget):
         self.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         self.setMinimumWidth(0)
         self._path = ""
+        self._virtual = None    # (kind, name, return_path)；虚拟态时接管整条面包屑
         self.h = QHBoxLayout(self)
         self.h.setContentsMargins(0, 0, 0, 0)
         self.h.setSpacing(1)
 
     def set_path(self, path):
-        if path == self._path:
+        if path == self._path and self._virtual is None:
             return
         self._path = path
+        if self._virtual is not None:
+            self._virtual = None       # 真实路径写入即退出虚拟显示
         self._rebuild()
+
+    def set_virtual(self, kind, name, return_path):
+        """虚拟视图面包屑：⌕ / 搜索名 或 🏷 / 层级标签；末段可点击返回。"""
+        self._virtual = (kind, name, return_path)
+        self._rebuild_virtual()
+
+    def clear_virtual(self):
+        """退出虚拟态：按 _path 恢复普通目录面包屑。"""
+        if self._virtual is None:
+            return
+        self._virtual = None
+        self._rebuild()
+
+    def _rebuild_virtual(self):
+        while self.h.count():
+            it = self.h.takeAt(0)
+            if it.widget():
+                it.widget().deleteLater()
+        kind, name, return_path = self._virtual
+        root = "⌕" if kind == "smart" else "🏷"
+        parts = [root] + ([name] if kind == "smart"
+                          else [p for p in str(name).split("/") if p])
+        if len(parts) == 1:
+            parts.append(name or "（未命名）")
+        # 与普通目录面包屑同一套宽度预算：层级再多也不会把面板撑宽。
+        budget = max(self.width(), 120)
+        n = min(len(parts), self.MAX_SEGMENTS)
+        while n > 2 and (budget - n * 4) // n < 28:
+            n -= 1
+        seg_px = max(24, min(self.MAX_SEGMENT_PX, (budget - n * 4) // n))
+        shown = parts
+        hidden = []
+        if n < len(parts):
+            tail = max(1, n - 2)           # 根标识 + … + 末 N 层
+            hidden = parts[1:len(parts) - tail]
+            shown = [parts[0], "…"] + parts[-tail:]
+        fm = self.fontMetrics()
+        for i, label in enumerate(shown):
+            b = QToolButton()
+            b.setText(fm.elidedText(label, Qt.ElideMiddle, seg_px))
+            b.setAutoRaise(True)
+            b.setFocusPolicy(Qt.NoFocus)
+            b.setMinimumWidth(0)
+            # 动态属性让主题 QSS 给虚拟段上区别色（不在此处 setStyleSheet）
+            b.setProperty("virtual", True)
+            b.style().unpolish(b)
+            b.style().polish(b)
+            if label == "…":
+                b.setToolTip("折叠了 %d 级标签：%s"
+                             % (len(hidden), " / ".join(hidden)))
+                b.setEnabled(False)
+            elif i == len(shown) - 1:
+                b.setToolTip("返回原目录：" + return_path)
+                b.clicked.connect(lambda _=False: self.virtual_return_clicked.emit())
+            else:
+                b.setEnabled(False)        # 层级标识段：纯展示，不导航
+                b.setToolTip(label)
+            self.h.addWidget(b, 0, Qt.AlignLeft)
+        self.h.addStretch(1)
 
     def resizeEvent(self, ev):
         super().resizeEvent(ev)
@@ -283,6 +385,9 @@ class CrumbBar(QWidget):
 
     def _rebuild(self):
         self._built_width = self.width()
+        if self._virtual is not None:
+            self._rebuild_virtual()     # 缩放/布局变化时保持虚拟标识
+            return
         while self.h.count():
             it = self.h.takeAt(0)
             if it.widget():
@@ -399,6 +504,7 @@ class FilePane(QWidget):
     focus_requested = Signal(object)
     quick_searched = Signal(str)     # 快速搜索关键字变化（状态栏显示）
     smart_done = Signal(int, object, bool, bool)  # 智能搜索回传（线程→UI，流式分批；final 收尾；是否截断）
+    virtual_changed = Signal()       # 虚拟视图进入/退出：通知 PaneTabs 重算标题
 
     filter_both = Signal(str)        # Ctrl+Enter：把过滤条件应用到所有面板
 
@@ -461,6 +567,7 @@ class FilePane(QWidget):
         self.crumb = CrumbBar()
         self.crumb.crumb_clicked.connect(self.navigate)
         self.crumb.edit_requested.connect(self._edit_path)
+        self.crumb.virtual_return_clicked.connect(self.return_to_origin)
 
         # 地址栏动作工具栏（Address bar - actions toolbar）
         def abar_btn(ic, tip, fn):
@@ -479,6 +586,11 @@ class FilePane(QWidget):
         self.addr_bar.addWidget(abar_btn(_icons.icon("folder_new"), "浏览文件夹…", self._browse_path))
         self.addr_bar.addWidget(abar_btn(_icons.icon("copy"), "复制完整路径 (Ctrl+Alt+I)", self._copy_path))
         self.addr_bar.addWidget(abar_btn(_icons.icon("up"), "上级目录", self.go_up))
+        # 虚拟视图专用的返回动作：只在搜索/标签聚合态显示
+        self.btn_return = abar_btn(_icons.icon("back"), "返回原目录 (Esc)", self.return_to_origin)
+        self.btn_return.setText("⏎ 返回")
+        self.btn_return.setVisible(False)
+        self.addr_bar.addWidget(self.btn_return)
 
         # ---- 工具栏 ----
         from . import icons as _icons
@@ -576,20 +688,40 @@ class FilePane(QWidget):
         self.table.installEventFilter(self)
         self.icons.installEventFilter(self)
 
-        # 智能文件夹搜索结果视图（页 2）
-        from PySide6.QtGui import QStandardItemModel, QStandardItem
-        self.results_model = QStandardItemModel(0, 1, self)
+        # 智能文件夹/标签聚合结果视图（页 2）：四列，大小与修改时间可直接比对新旧
+        self.results_model = _ResultItemModel(0, 4, self)
+        self.results_model.setHorizontalHeaderLabels(
+            ["文件名", "所在目录", "大小", "修改时间"])
         self.results_list = _SmartResultView()
         self.results_list.init_drag_view(self, accept_drop=False)
         self.results_list.setModel(self.results_model)
-        self.results_list.setFrameShape(QListView.NoFrame)
-        self.results_list.setEditTriggers(QListView.NoEditTriggers)
-        self.results_list.setUniformItemSizes(True)
+        self.results_list.setFrameShape(QTableView.NoFrame)
+        self.results_list.setEditTriggers(QTableView.NoEditTriggers)
+        self.results_list.setSelectionBehavior(QTableView.SelectRows)
+        self.results_list.setShowGrid(False)
+        self.results_list.verticalHeader().setVisible(False)
+        self.results_list.verticalHeader().setDefaultSectionSize(22)
+        rh = self.results_list.horizontalHeader()
+        rh.setSectionResizeMode(0, QHeaderView.Stretch)
+        for col, width in ((1, 260), (2, 84), (3, 140)):
+            rh.setSectionResizeMode(col, QHeaderView.Interactive)
+            rh.resizeSection(col, width)
+        rh.setStretchLastSection(False)
+        # 表头可点击排序；默认由 show_tag / 搜索收尾时按修改时间倒序
+        self.results_list.setSortingEnabled(True)
         self.results_list.doubleClicked.connect(self._result_activated)
         self.results_list.setContextMenuPolicy(Qt.CustomContextMenu)
         self.results_list.customContextMenuRequested.connect(self._results_menu)
         self._smart_epoch = 0
         self._smart_info = ("", "", "")
+        self._result_mode = "smart"
+        self._tag_name = ""
+        # 虚拟视图状态：进入前真实目录 + 展示名，重启不持久化
+        self._return_path = ""
+        self._virtual_name = ""
+        self._virtual_kind = ""     # "smart" / "tag"
+        self._smart_return_path = ""
+        self._filter_tip = self.filter_edit.toolTip()
 
         self.stack = QStackedWidget()
         self.stack.addWidget(self.table)   # 0 detail
@@ -668,6 +800,12 @@ class FilePane(QWidget):
 
     # ---- 地址栏动作 ----
     def _edit_path(self):
+        if self._virtual_name:
+            main = getattr(self, "main", None)
+            if main is not None:
+                main.st_label.setText(
+                    "虚拟视图：按 Esc 或点击地址栏末段返回原目录（路径编辑暂不可用）")
+            return
         self.path_edit.setVisible(True)
         self.path_edit.setFocus()
         self.path_edit.lineEdit().selectAll()
@@ -700,7 +838,7 @@ class FilePane(QWidget):
             self.main.toggle_tree()
 
     # ---- 导航 ------------------------------------------------------------
-    def navigate(self, path, push_history=True):
+    def navigate(self, path, push_history=True, bypass_lock=False):
         path = path.strip()
         if not path:
             return
@@ -712,16 +850,21 @@ class FilePane(QWidget):
         # 点收藏/树/面包屑后，model 已加载但界面还停在结果页，看起来"无响应"。
         if self.stack.currentIndex() == 2:
             self.stack.setCurrentIndex(0 if self._view_mode == VIEW_DETAIL else 1)
-        lock = getattr(self, "tab_lock", "")
-        if lock == "hard":
-            self._set_path_text(self.model.path)
-            return
-        if lock == "sub":
-            root = os.path.normcase(getattr(self, "lock_root", "") or self.model.path)
-            new = os.path.normcase(path)
-            if new != root and not new.startswith(root.rstrip("\\") + "\\"):
+        if not bypass_lock:
+            lock = getattr(self, "tab_lock", "")
+            if lock == "hard":
                 self._set_path_text(self.model.path)
                 return
+            if lock == "sub":
+                root = os.path.normcase(getattr(self, "lock_root", "") or self.model.path)
+                new = os.path.normcase(path)
+                if new != root and not new.startswith(root.rstrip("\\") + "\\"):
+                    self._set_path_text(self.model.path)
+                    return
+        # 真正提交导航后才退出虚拟态：同路径提前 return 也必须走这里。
+        # 顺带 +1 epoch 作废尚未回传的旧搜索批次（异步导航期间 model.path 还没变，
+        # 只比较 model.path 会在窗口期漏判）。
+        self._exit_virtual()
         if push_history and self._hist_pos >= 0 and path == self._history[self._hist_pos]:
             # 不能用 model.refresh()：它读 model.path，而异步扫描可能还没完成，
             # model.path 仍是上一个目录，会把刚提交的导航"回退"到旧目录。
@@ -747,7 +890,55 @@ class FilePane(QWidget):
                 self.path_edit.removeItem(0)
         self.path_edit.blockSignals(False)
         self.path_edit.setToolTip(path)
-        self.crumb.set_path(path)
+        # 虚拟态下 F5 / 切回标签会触发目录回写：path_edit 是隐藏的，
+        # 但面包屑必须保持虚拟标识，不能被 model.path 覆盖。
+        if not self._virtual_name:
+            self.crumb.set_path(path)
+
+    # ---- 虚拟视图（智能搜索 / 标签聚合）------------------------------
+    def _enter_virtual(self, kind, name):
+        """记录返回点并接管标题/面包屑；已在虚拟态时保留最初的返回点。"""
+        if not self._virtual_name:
+            self._return_path = self.model.path or os.path.expanduser("~")
+        self._virtual_kind = kind
+        self._virtual_name = name
+        self.filter_edit.setEnabled(False)
+        self.filter_edit.setToolTip(
+            "虚拟视图下过滤不可用；按 Esc 或点击地址栏末段返回原目录")
+        self.btn_return.setVisible(True)
+        self.btn_return.setToolTip("返回原目录：" + self._return_path + " (Esc)")
+        self.crumb.set_virtual(kind, name, self._return_path)
+        self.virtual_changed.emit()
+        self.status_changed.emit()
+
+    def _exit_virtual(self):
+        """清除虚拟态并恢复真实目录标识；返回 False 表示本来就不在虚拟态。"""
+        if not self._virtual_name:
+            return False
+        self._virtual_name = ""
+        self._virtual_kind = ""
+        self._return_path = ""
+        self._smart_return_path = ""
+        self._result_mode = "smart"   # 防止 _refresh_tag_view 事后把本面板切回旧聚合
+        self._tag_name = ""
+        self._smart_info = ("", "", "")
+        self._smart_epoch += 1        # 丢弃尚未回传的搜索批次
+        self.filter_edit.setEnabled(True)
+        self.filter_edit.setToolTip(self._filter_tip)
+        self.btn_return.setVisible(False)
+        self.crumb.clear_virtual()
+        self.virtual_changed.emit()
+        self.status_changed.emit()
+        return True
+
+    def return_to_origin(self):
+        """面包屑末段 / 返回按钮：回到进入虚拟视图前的真实目录。"""
+        main = getattr(self, "main", None)
+        if main is not None and hasattr(main, "return_from_virtual"):
+            return main.return_from_virtual(self)
+        target = self._return_path or self.model.path
+        if target:
+            self.navigate(target, bypass_lock=True)
 
     def _path_submitted(self):
         # 同一次回车可能同时触发 activated / returnPressed / setCurrentText
@@ -927,13 +1118,17 @@ class FilePane(QWidget):
         self._nav_snapshot["current"] = cur.path if cur else None
 
     def _cur_view(self):
-        return self.table if self.stack.currentIndex() == 0 else self.icons
+        idx = self.stack.currentIndex()
+        if idx == 2:
+            return self.results_list
+        return self.table if idx == 0 else self.icons
 
     def selected_entries(self):
         # 图标视图用的是另一套代理，必须按当前视图自己的模型映射，
-        # 否则拖放/复制会取到错误的文件。
+        # 否则拖放/复制会取到错误的文件。结果视图同理（聚合视图下 F2/F5 等
+        # 主窗口操作应作用于选中的结果项，而不是背后目录里的文件）。
         view = self._cur_view()
-        rows = sorted({i.row() for i in view.selectionModel().selectedRows()
+        rows = sorted({i.row() for i in view.selectionModel().selectedIndexes()
                        if i.isValid()})
         out = []
         for r in rows:
@@ -986,17 +1181,10 @@ class FilePane(QWidget):
                 a_zip.triggered.connect(self.main.zip_selected)
             a_md5 = menu.addAction("计算 MD5")
             a_md5.triggered.connect(self.main.calc_md5)
-            # 标签：彩色圆点叠加在图标上，持久化到 cfg
-            tag_menu = menu.addMenu(icons.icon("tag"), "标签")
-            names = {"#ff453a": "红色", "#ff9f0a": "橙色", "#ffd60a": "黄色",
-                     "#34c759": "绿色", "#0a84ff": "蓝色", "#5e6ad2": "靛蓝",
-                     "#af52de": "紫色", "#98a0ac": "灰色"}
-            for c in names:
-                act_c = tag_menu.addAction(icons.color_dot(c), names[c])
-                act_c.triggered.connect(lambda _=False, cc=c: self.main.tag_entry(cc))
-            a_untag = tag_menu.addAction("移除标签")
-            a_untag.triggered.connect(lambda: self.main.tag_entry(None))
-            menu.addSeparator()
+            # 标签：命名层级标签，勾选切换 / 底部新建（快捷键 T 复用同一菜单）
+            if getattr(self, "main", None):
+                menu.addMenu(self.main.build_tag_menu(self, menu))
+                menu.addSeparator()
             a_del = menu.addAction("删除到回收站 (Delete / F8)")
             a_del.triggered.connect(self.main.delete_selected)
             a_purge = menu.addAction("永久删除 (Shift+Delete)")
@@ -1029,38 +1217,119 @@ class FilePane(QWidget):
             except Exception:
                 pass
 
-    # ---- 智能文件夹（递归搜索结果视图）--------------------------------
+    # ---- 智能文件夹 / 标签聚合（四列结果视图）----------------------------
+    def _append_result_row(self, e, ghost=False):
+        """结果视图追加一行：文件名 + 所在目录 + 大小 + 修改时间；失效项灰显。"""
+        from . import tags as _tags
+        root = self.results_model.invisibleRootItem()
+        it = QStandardItem(e.name)
+        if not ghost:
+            it.setIcon(sys_icon(e.path, e.is_dir))
+        it.setData(e, Qt.UserRole)
+        it.setData(ghost, Qt.UserRole + 5)   # 排序时失效项沉底
+        loc_text = os.path.dirname(e.path) or e.path
+        if ghost:
+            loc_text = "%s — %s" % (_tags.GHOST_TEXT, loc_text)
+        loc = QStandardItem(loc_text)
+        size = QStandardItem("—" if ghost else ("" if e.is_dir else _fmt_size(e.size)))
+        mtime = QStandardItem("—" if ghost else e.mtime_text())
+        size.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        size.setToolTip("已失效" if ghost else "%d 字节" % e.size)
+        mtime.setToolTip("已失效" if ghost else (e.mtime_text() or "未知"))
+        if getattr(self, "_result_mode", "") == "tag":
+            # 聚合视图：完整路径 + 全部标签及各自描述 + 链接描述（link_notes）
+            cfg = getattr(getattr(self, "main", None), "cfg", None) or {}
+            tip = _tags.file_tooltip(cfg, e.path, ghost=ghost)
+        else:
+            tip = e.path + (("\n" + _tags.GHOST_TEXT) if ghost else "")
+        it.setToolTip(tip)
+        loc.setToolTip(tip)
+        if ghost:
+            light = QApplication.instance() is not None and \
+                QApplication.instance().property("theme") == "light"
+            gray = QColor("#8d94a0" if light else "#7b8496")
+            for cell in (it, loc, size, mtime):
+                cell.setForeground(gray)
+        root.appendRow([it, loc, size, mtime])
+
+    def sort_results(self, column=3, order=Qt.DescendingOrder):
+        """表头指示与模型排序同步；默认列 3（修改时间）倒序，最新在前。"""
+        header = self.results_list.horizontalHeader()
+        header.blockSignals(True)
+        header.setSortIndicator(column, order)
+        header.blockSignals(False)
+        self.results_model.sort(column, order)
+
+    def _placeholder_row(self, text):
+        """提示行：占满四列，无 Entry 数据，排序时永远沉底。"""
+        tip = QStandardItem(text)
+        tip.setFlags(Qt.NoItemFlags)
+        return [tip] + [QStandardItem("") for _ in range(3)]
+
     def show_smart(self, name, scope, query):
         """打开智能文件夹：在 scope 内递归搜索 query，结果展示在当前面板。"""
         scope = os.path.abspath(os.path.expanduser(scope or "."))
-        if not os.path.isdir(scope):
-            self._smart_epoch += 1
-            self._smart_info = (name, scope, query)
-            self.results_model.removeRows(0, self.results_model.rowCount())
-            tip = QStandardItem(f"（无效的搜索范围：{scope}）")
-            tip.setFlags(Qt.NoItemFlags)
-            self.results_model.invisibleRootItem().appendRow(tip)
-            self.stack.setCurrentWidget(self.results_list)
-            return
         self._smart_epoch += 1
+        self._result_mode = "smart"
+        self._tag_name = ""
         self._smart_info = (name, scope, query)
+        self._enter_virtual("smart", name or query or "搜索")
+        self._smart_return_path = self._return_path   # 回传时校验用户是否已真实导航
         self._smart_truncated = False
         self.results_model.removeRows(0, self.results_model.rowCount())
         root = self.results_model.invisibleRootItem()
-        tip = QStandardItem(f"⌛ 正在搜索：{query or '*'} （范围：{scope}）")
-        tip.setFlags(Qt.NoItemFlags)
-        root.appendRow(tip)
+        if not os.path.isdir(scope):
+            root.appendRow(self._placeholder_row(f"（无效的搜索范围：{scope}）"))
+            self.stack.setCurrentWidget(self.results_list)
+            return
+        root.appendRow(self._placeholder_row(
+            f"⌛ 正在搜索：{query or '*'} （范围：{scope}）"))
         self.stack.setCurrentWidget(self.results_list)
+        main = getattr(self, "main", None)
         task = _SmartSearch(self, self._smart_epoch, scope, query,
-                            getattr(self.model, "show_hidden", False))
+                            getattr(self.model, "show_hidden", False),
+                            getattr(main, "cfg", None))
         QThreadPool.globalInstance().start(task)
+
+    def show_tag(self, name, cfg):
+        """标签聚合：纯内存字典遍历，零目录扫描；失效项灰显。"""
+        from . import tags as _tags
+        self._smart_epoch += 1          # 作废尚未完成的智能搜索
+        self._result_mode = "tag"
+        self._tag_name = name
+        self._smart_info = (name, "", "")
+        self._enter_virtual("tag", name)   # 标签被删/改名也不影响标题：只显示原名
+        self._smart_truncated = False
+        self.results_model.removeRows(0, self.results_model.rowCount())
+        rows = _tags.aggregate(cfg, name)
+        for path, ok in rows:
+            try:
+                st = os.stat(path) if ok else None
+            except OSError:
+                st, ok = None, False
+            is_dir = bool(st) and os.path.isdir(path)
+            e = Entry(os.path.basename(path), path, is_dir,
+                      st.st_size if st else 0, st.st_mtime if st else 0, False)
+            self._append_result_row(e, ghost=not ok)
+        if not rows:
+            self.results_model.appendRow(self._placeholder_row("（此标签下暂无文件）"))
+        else:
+            self.sort_results()          # 修改时间倒序：多个同名/同标签文件先看最新
+        self.stack.setCurrentWidget(self.results_list)
+        self.status_changed.emit()
 
     @Slot(int, object, bool, bool)
     def _smart_results(self, epoch, batch, final, truncated):
         self._on_smart_results(epoch, batch, final, truncated)
 
     def _on_smart_results(self, epoch, batch, final, truncated=False):
-        if epoch != self._smart_epoch:
+        if epoch != self._smart_epoch or self._result_mode != "smart":
+            return
+        # 双重守卫：真实导航已发生但 model.path 还没更新（异步扫描窗口期）时，
+        # epoch 已在 navigate 里作废；这里再按发起时的返回路径校验一次。
+        launched_from = getattr(self, "_smart_return_path", None)
+        if launched_from and os.path.normcase(self.model.path) != os.path.normcase(launched_from):
+            self._smart_epoch += 1
             return
         if final:
             self._smart_truncated = bool(truncated)
@@ -1070,54 +1339,123 @@ class FilePane(QWidget):
             if root.child(i).data(Qt.UserRole) is None:
                 root.removeRow(i)
         for e in batch:
-            it = QStandardItem(e.name)
-            it.setIcon(sys_icon(e.path, e.is_dir))
-            it.setData(e, Qt.UserRole)
-            it.setToolTip(e.path)
-            root.appendRow(it)
+            self._append_result_row(e)
         self.status_changed.emit()
         if final:
             name, scope, query = self._smart_info
-            if self.results_model.rowCount() == 0:
-                tip = QStandardItem(f"（无结果：{query or '*'} ／ {scope}）")
-                tip.setFlags(Qt.NoItemFlags)
-                root.appendRow(tip)
+            count = sum(1 for r in range(root.rowCount())
+                        if root.child(r).data(Qt.UserRole) is not None)
+            if count == 0:
+                root.appendRow(self._placeholder_row(
+                    f"（无结果：{query or '*'} ／ {scope}）"))
             elif truncated:
-                tip = QStandardItem("⚠ 结果已达上限 %d 条，仅显示前 %d 条；请缩小范围或细化条件"
-                                    % (_SmartSearch.MAX_RESULTS, self.results_model.rowCount()))
-                tip.setFlags(Qt.NoItemFlags)
-                root.appendRow(tip)
+                root.appendRow(self._placeholder_row(
+                    "⚠ 结果已达上限 %d 条，仅显示前 %d 条；请缩小范围或细化条件"
+                    % (_SmartSearch.MAX_RESULTS, count)))
+            if count:
+                self.sort_results()      # 搜索收尾后按修改时间倒序，最新在前
 
-    def _results_menu(self, pos):
-        name, scope, query = self._smart_info
-        if not scope:
-            return
+    def build_results_menu(self):
+        """构建结果视图右键菜单，返回 (menu, acts)；不 exec，便于测试复用。"""
         m = QMenu(self)
-        a_save = m.addAction("保存为智能文件夹…")
-        a_cp = m.addAction("复制全部结果路径")
-        act = m.exec(self.results_list.viewport().mapToGlobal(pos))
-        if act is a_save and getattr(self, "main", None):
-            self.main.fav_tree._smart_dialog(
-                prefill={"name": name, "scope": scope, "query": query})
-        elif act is a_cp:
+        acts = {}
+        e = self.current_entry()
+        if e:
+            acts["open"] = m.addAction("打开" if e.is_dir else "打开（系统默认程序）")
+            acts["copy_name"] = m.addAction("复制文件名")
+            acts["copy_path"] = m.addAction("复制完整路径")
+            m.addSeparator()
+            acts["rename"] = m.addAction("重命名 (F2)")
+            acts["copy_sel"] = m.addAction("复制选中项（Ctrl+C）")
+            acts["cut_sel"] = m.addAction("剪切选中项（Ctrl+X）")
+            acts["delete"] = m.addAction("删除到回收站 (Delete)")
+            acts["purge"] = m.addAction("永久删除 (Shift+Delete)")
+            acts["md5"] = m.addAction("计算 MD5")
+            m.addSeparator()
+            # 智能搜索结果 / 标签聚合结果都能直接打标签（与文件视图同一菜单）
+            main = getattr(self, "main", None)
+            if main is not None and hasattr(main, "build_tag_menu"):
+                m.addMenu(main.build_tag_menu(self, m))
+        acts["copy_all"] = m.addAction("复制全部结果路径")
+        if self._result_mode == "tag":
+            m.addSeparator()
+            acts["manage"] = m.addAction("管理此标签…")
+            acts["clean"] = m.addAction("清理失效标签记录…")
+        else:
+            acts["save"] = m.addAction("保存为智能文件夹…")
+        return m, acts
+
+    def handle_result_action(self, act, acts):
+        """执行结果视图菜单动作（主窗口操作入口统一复用）。"""
+        if act is None or not getattr(self, "main", None):
+            return
+        e = self.current_entry()
+        name, scope, query = self._smart_info
+        if act is acts.get("open") and e:
+            self.activate.emit(e)
+        elif act is acts.get("copy_name") and e:
+            QGuiApplication.clipboard().setText(e.name)
+        elif act is acts.get("copy_path") and e:
+            QGuiApplication.clipboard().setText(e.path)
+        elif act is acts.get("rename"):
+            self.main.rename_selected()
+        elif act is acts.get("copy_sel"):
+            self.main.clipboard_copy()
+        elif act is acts.get("cut_sel"):
+            self.main.clipboard_cut()
+        elif act is acts.get("delete"):
+            self.main.delete_selected()
+        elif act is acts.get("purge"):
+            self.main.purge_selected()
+        elif act is acts.get("md5"):
+            self.main.calc_md5()
+        elif act is acts.get("copy_all"):
             paths = []
             for r in range(self.results_model.rowCount()):
-                e = self.results_model.item(r).data(Qt.UserRole)
-                if e:
-                    paths.append(e.path)
+                item = self.results_model.item(r, 0)
+                entry = item.data(Qt.UserRole) if item else None
+                if entry:
+                    paths.append(entry.path)
             QGuiApplication.clipboard().setText("\n".join(paths))
+        elif act is acts.get("save"):
+            self.main.fav_tree._smart_dialog(
+                prefill={"name": name, "scope": scope, "query": query})
+        elif act is acts.get("manage"):
+            self.main.manage_tag_dialog(self._tag_name)
+        elif act is acts.get("clean"):
+            self.main.clean_ghost_tags(self._tag_name)
+
+    def _results_menu(self, pos):
+        # 右键行即选中行：标签菜单依赖 selected_entries，避免点到未选行时
+        # 菜单显示「未选中」状态或对新标签操作落到错误条目上。
+        idx = self.results_list.indexAt(pos)
+        if idx.isValid():
+            self.results_list.setCurrentIndex(idx)
+            self.results_list.selectRow(idx.row())
+        m, acts = self.build_results_menu()
+        self.handle_result_action(m.exec(self.results_list.viewport().mapToGlobal(pos)), acts)
 
     def _result_activated(self, index):
-        e = index.data(Qt.UserRole)
+        e = entry_from_index(self.results_list, index)
         if e is not None:
             self.activate.emit(e)
 
     def smart_status(self):
-        """智能结果视图下的状态栏文本。"""
-        name, scope, query = self._smart_info
-        suffix = "（已截断，仅前 %d 条）" % _SmartSearch.MAX_RESULTS \
-            if getattr(self, "_smart_truncated", False) else ""
-        return f"智能文件夹 [{name}]：{self.results_model.rowCount()} 个结果{suffix}"
+        """结果视图下的状态栏文本。"""
+        if getattr(self, "_result_mode", "smart") == "tag":
+            from . import tags as _tags
+            ghost = _tags.ghost_count(self.main.cfg, self._tag_name) \
+                if getattr(self, "main", None) else 0
+            suffix = "（⚠ %d 条记录已失效）" % ghost if ghost else ""
+            text = f"标签 [{self._tag_name}]：{self.results_model.rowCount()} 个结果{suffix}"
+        else:
+            name, _scope, _query = self._smart_info
+            suffix = "（已截断，仅前 %d 条）" % _SmartSearch.MAX_RESULTS \
+                if getattr(self, "_smart_truncated", False) else ""
+            text = f"智能文件夹 [{name}]：{self.results_model.rowCount()} 个结果{suffix}"
+        if self._virtual_name:
+            text += "　（虚拟视图 — Esc 返回）"
+        return text
 
     def eventFilter(self, obj, ev):
         """快速搜索：可打印字符累积匹配，Backspace 回退，Esc/失焦清除。"""
@@ -1235,16 +1573,16 @@ class _ActiveGlow(QWidget):
         p.end()
 
 
-def compile_query(query):
+def compile_query(query, cfg=None):
     """把搜索条件编译为 OR 组：每组是 AND 谓词列表。
 
     独立搜索对话框与面板内智能搜索共用同一套语法：
       ext:py,js / size:>10mb / date:>2025-01-01 / type:dir|file
-      tag:红 / /正则/ / 名称子串 / fnmatch 通配符（*.py、report?.txt）
+      tag:用例 / tag:红（兼容旧颜色） / /正则/ / 名称子串 / fnmatch 通配符
     空格与 & 为 AND，分号为 OR。
     """
     ors = [t.strip() for t in (query or "").split(";") if t.strip()]
-    return [[p for p in (_SmartSearch._mk_pred(t)
+    return [[p for p in (_SmartSearch._mk_pred(t, cfg)
                          for t in o.replace("&", " ").split()) if p] or [None]
             for o in ors] or [[None]]
 
@@ -1257,7 +1595,7 @@ class _SmartSearch(QRunnable):
       size:>10mb / <1k   大小（b/k/m/g）
       date:>2025-01-01   修改时间（YYYY[-MM[-DD]]）
       type:dir|file
-      tag:红 / #ff453a   文件标签（颜色名或十六进制）
+      tag:用例 / tag:红   命名标签（含子层级前缀；旧颜色名/十六进制仍兼容）
       /正则/             文件名正则
     """
     SKIP_DIRS = {".git", "__pycache__", "$RECYCLE.BIN",
@@ -1265,22 +1603,21 @@ class _SmartSearch(QRunnable):
     MAX_RESULTS = 2000
     BATCH = 200
 
-    _TAG_NAMES = {"红": "#ff453a", "橙": "#ff9f0a", "黄": "#ffd60a", "绿": "#34c759",
-                  "蓝": "#0a84ff", "靛": "#5e6ad2", "紫": "#af52de", "灰": "#98a0ac"}
     _UNITS = {"": 1, "b": 1, "k": 1024, "m": 1048576, "g": 1073741824}
 
     class _Sig:
         pass
 
-    def __init__(self, pane, epoch, scope, query, show_hidden=False):
+    def __init__(self, pane, epoch, scope, query, show_hidden=False, cfg=None):
         super().__init__()
         self.pane, self.epoch, self.scope = pane, epoch, scope
         self.show_hidden = bool(show_hidden)
-        self.or_groups = compile_query(query)
+        from . import tags as _tags
+        self.or_groups = compile_query(query, cfg or _tags.get_registry())
 
     # ---- 条件解析 --------------------------------------------------------
     @staticmethod
-    def _mk_pred(t):
+    def _mk_pred(t, cfg=None):
         t = t.strip()
         if not t:
             return None
@@ -1310,7 +1647,8 @@ class _SmartSearch(QRunnable):
                 if v.lower().startswith("f"):
                     return lambda n, p, st, d: not d
             elif k == "tag":
-                return _SmartSearch._tag_pred(v)
+                from . import tags as _tags
+                return _tags.make_pred(v, cfg)
         # fnmatch 通配符：*.py / report?.txt / [ab]*.log（旧对话框原生支持）
         if any(c in t for c in "*?["):
             import fnmatch
@@ -1344,27 +1682,6 @@ class _SmartSearch(QRunnable):
         if before:
             return lambda n, p, st, d: st is not None and st.st_mtime < ts
         return lambda n, p, st, d: st is not None and st.st_mtime >= ts
-
-    @staticmethod
-    def _tag_pred(v):
-        vv = v.lower().lstrip("#")
-        want = set()
-        if len(vv) == 6:
-            try:
-                int(vv, 16)
-                want.add("#" + vv)
-            except ValueError:
-                pass
-        for cn, cv in _SmartSearch._TAG_NAMES.items():
-            if cn in vv or vv in cn:
-                want.add(cv)
-        if not want:
-            return None
-        from .fsmodel import FILE_TAGS
-        def pred(n, p, st, d):
-            tags = FILE_TAGS.get(os.path.normcase(os.path.abspath(p)))
-            return bool(tags) and any(c.lower() in want for c in tags)
-        return pred
 
     # ---- 执行 ------------------------------------------------------------
     def run(self):

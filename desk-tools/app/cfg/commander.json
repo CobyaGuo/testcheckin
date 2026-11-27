@@ -11,10 +11,6 @@
     {
       "name": "文档",
       "path": "C:\\Users\\cobyg/Documents"
-    },
-    {
-      "name": "logs",
-      "path": "C:\\Users\\cobyg\\.sheetagent\\logs"
     }
   ],
   "panes": [
@@ -23,26 +19,39 @@
         {
           "path": "C:\\Users\\cobyg",
           "title": "",
-          "color": ""
+          "color": "",
+          "lock": "",
+          "lock_root": ""
         },
         {
-          "path": "D:\\AIAgent\\pytool\\desk-tools",
+          "path": "C:\\Users\\cobyg\\Desktop",
           "title": "",
-          "color": "#3b82f6"
+          "color": "#3b82f6",
+          "lock": "",
+          "lock_root": ""
         }
       ]
     },
     {
       "tabs": [
         {
-          "path": "D:\\BaiduNetdiskDownload",
+          "path": "D:\\",
           "title": "",
-          "color": ""
+          "color": "",
+          "lock": "",
+          "lock_root": ""
+        },
+        {
+          "path": "C:\\Users\\cobyg",
+          "title": "",
+          "color": "",
+          "lock": "",
+          "lock_root": ""
         }
       ]
     }
   ],
-  "active_pane": 0,
+  "active_pane": 1,
   "show_hidden": false,
   "single_pane": false,
   "window": {
@@ -50,20 +59,63 @@
     "h": 890,
     "maximized": true
   },
+  "links_dir": "C:\\Users\\cobyg\\Links",
+  "link_notes": {},
   "view_mode": "detail",
   "theme": "dark",
-  "fs_tree": true,
+  "fs_tree": false,
   "fav_tree": true,
-  "file_tags": {},
+  "file_tags": {
+    "c:\\users\\cobyg\\desktop\\tools\\tools——bak\\explorer_tool.py": [
+      {
+        "t": "py工具",
+        "at": 1795790271.2155936
+      }
+    ],
+    "c:\\users\\cobyg\\desktop\\desktop": [
+      {
+        "t": "pytest1",
+        "at": 1795793902.166367
+      }
+    ]
+  },
   "split_sizes": [
-    142,
-    258,
-    1134
+    180,
+    0,
+    1355
   ],
   "pane_sizes": [
-    544,
+    633,
     44,
-    544
+    676
   ],
-  "smart_folders": []
+  "smart_folders": [
+    {
+      "name": "智能1",
+      "scope": "C:\\Users\\cobyg\\Desktop\\tools\\",
+      "query": "*.py constant"
+    }
+  ],
+  "tag_defs": {
+    "py工具": {
+      "color": "#ff453a",
+      "created": "2026-11-27",
+      "note": "常用工具 py",
+      "note_at": "2026-11-27"
+    },
+    "pytest1": {
+      "color": "#ff9f0a",
+      "created": "2026-11-27",
+      "note": ""
+    }
+  },
+  "fav_sets": {
+    "收藏集1": [],
+    "搜索2": [
+      {
+        "name": "logs",
+        "path": "C:\\Users\\cobyg\\.sheetagent\\logs"
+      }
+    ]
+  }
 }

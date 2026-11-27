@@ -282,6 +282,14 @@ class _EXTRA:
     """收藏树等专用字形（16x16 线性）。"""
 
     @staticmethod
+    def _globe(p):             # 链接文件（地球：外圈 + 赤道 + 经线）
+        p.drawEllipse(QPointF(8, 8), 6, 6)
+        p.drawLine(QPointF(2.2, 8), QPointF(13.8, 8))
+        p.drawEllipse(QPointF(8, 8), 2.7, 6)
+        p.drawLine(QPointF(2.6, 5.5), QPointF(13.4, 5.5))
+        p.drawLine(QPointF(2.6, 10.5), QPointF(13.4, 10.5))
+
+    @staticmethod
     def _tag(p):               # 标签（右上角打孔的吊牌）
         path = QPainterPath(QPointF(2.5, 2.5))
         path.lineTo(8, 2.5)

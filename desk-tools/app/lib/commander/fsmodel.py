@@ -51,6 +51,12 @@ def sys_icon(path, is_dir=False):
     ic = _ICON_CACHE.get(key)
     if ic is not None:
         return ic
+    # .url 是标准 InternetShortcut，Shell 图标与实际内容无关；用自绘地球
+    # 更直观地表达"这是链接不是本地文件"。不进 _ICON_CACHE：图标本身按
+    # 主题缓存，主题切换时 icons._CACHE 会被清掉，这里跟着自动刷新。
+    if not is_dir and key == "ext:.url":
+        from . import icons as _ic
+        return _ic.icon("globe")
     if is_dir:
         from . import icons as _ic
         ic = _ic.mac_folder()
