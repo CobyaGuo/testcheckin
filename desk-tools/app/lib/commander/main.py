@@ -25,11 +25,11 @@ from . import icons
 
 from . import config
 from .dialogs import BatchRenameDialog, Md5Dialog
-from .operations import OpQueue, OpRunner
+from .operations import OpQueue, OpRunner, delete_to_recycle_bin
 from .pane import (VIEW_DETAIL, VIEW_ICONS, FilePane, FileSystemTree)
 from .queuebar import FavoritesTree, QueueBar
 from .theme import apply_theme
-from .viewer import QuickViewerPanel, SearchDialog, ViewerDialog
+from .viewer import QuickViewerPanel, ViewerDialog
 
 _ASSETS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets")
 
@@ -132,6 +132,9 @@ class PaneTabs(QTabWidget):
         if not copy:
             if self.count() <= 1:
                 return
+            if getattr(w, "tab_lock", ""):
+                self.window().statusBar().showMessage("标签已锁定，请先解锁再移动", 3000)
+                return
             self.removeTab(idx)
             w.deleteLater()
         other.add_pane(path, custom, color)
@@ -148,6 +151,14 @@ class PaneTabs(QTabWidget):
         menu = QMenu(self)
         a_new = menu.addAction("新建标签 (Ctrl+T)")
         a_ren = menu.addAction("重命名标签…")
+        m_lock = menu.addMenu("锁定标签")
+        cur_lock = getattr(self.widget(idx), "tab_lock", "")
+        lacts = {}
+        for val, lname in (("", "不锁定"), ("nav", "锁定 - 允许导航"),
+                           ("sub", "锁定 - 仅限子文件夹"), ("hard", "锁定 - 禁止导航")):
+            la = m_lock.addAction(("● " if cur_lock == val else "　 ") + lname)
+            la.triggered.connect(lambda _=False, v=val, i=idx: self.set_tab_lock(i, v))
+            lacts[val] = la
         m_col = menu.addMenu("标签颜色")
         for color, cname in TAB_COLORS:
             act = m_col.addAction("● " + cname)
@@ -169,6 +180,11 @@ class PaneTabs(QTabWidget):
             self.transfer_tab(idx, copy=False)
         elif chosen is a_cp:
             self.transfer_tab(idx, copy=True)
+        else:
+            for v, la in lacts.items():
+                if chosen is la:
+                    self.set_tab_lock(idx, v)
+                    break
 
     def rename_tab(self, idx):
         pane = self.widget(idx)
@@ -191,11 +207,21 @@ class PaneTabs(QTabWidget):
         bar.update()
         self.main.save_tabs()
 
-    def add_pane(self, path, title="", color=""):
+    def set_tab_lock(self, idx, mode):
+        pane = self.widget(idx)
+        pane.tab_lock = mode
+        pane.lock_root = pane.current_path()
+        base = self.tabText(idx).replace("\U0001f512", "").strip()
+        self.setTabText(idx, ("\U0001f512" if mode else "") + base)
+        self.main.save_tabs()
+
+    def add_pane(self, path, title="", color="", lock="", lock_root=""):
         pane = FilePane(strip_side=self._strip_side)
         pane.main = self.main
         pane.custom_title = title
         pane.tab_color = color
+        pane.tab_lock = lock
+        pane.lock_root = lock_root
         pane.activate.connect(lambda e, tp=pane: self.main.on_activate(e, tp))
         pane.status_changed.connect(self.main.update_status)
         pane.quick_searched.connect(lambda t: self.main.quick_search_display(t))
@@ -204,7 +230,8 @@ class PaneTabs(QTabWidget):
         pane.path_changed.connect(lambda p, tp=pane: self.main._sync_dir_watch(tp, p))
         pane.focus_requested.connect(lambda tp=pane: self.main._pane_focused(tp))
         pane.filter_both.connect(lambda t, tp=pane: self.main.apply_filter_both(t))
-        idx = self.addTab(pane, title or os.path.basename(path) or path)
+        pre = "\U0001f512" if lock else ""
+        idx = self.addTab(pane, pre + (title or os.path.basename(path) or path))
         self.setTabToolTip(idx, path)
         if color:
             self.tabBar().bg[pane] = QColor(color)
@@ -217,15 +244,20 @@ class PaneTabs(QTabWidget):
         self.main.save_tabs()
 
     def _retitle(self, pane, path):
+        pre = "\U0001f512" if getattr(pane, "tab_lock", "") else ""
         if getattr(pane, "custom_title", ""):
+            self.setTabText(self.indexOf(pane), pre + pane.custom_title)
             return
-        self.setTabText(self.indexOf(pane), os.path.basename(path) or path or "…")
+        self.setTabText(self.indexOf(pane), pre + (os.path.basename(path) or path or "…"))
         self.setTabToolTip(self.indexOf(pane), path)
 
     def _close_tab(self, idx):
         if self.count() <= 1:
             return
         w = self.widget(idx)
+        if getattr(w, "tab_lock", ""):
+            self.window().statusBar().showMessage("标签已锁定，请先解锁再关闭", 3000)
+            return
         self.removeTab(idx)
         w.deleteLater()
         # 关闭的可能正是被监听的前台 tab：延迟到删除完成后重算
@@ -239,8 +271,7 @@ class PaneTabs(QTabWidget):
         pane = self.widget(idx)
         if pane and self.main:
             # 切到前台的 tab：全量刷新一次，并重挂目录监听；
-            # 刚 add_pane 时 path 尚未加载，_on_tab_switched 会被 setCurrentIndex
-            # 触发，此时 path 为空，两个动作都会自行跳过，真正的加载由 navigate 完成。
+            # 刚 add_pane 时 path 尚未加载，此时 path 为空，两个动作都会自行跳过。
             self.main._pane_focused(pane)
             self.main._on_tab_foreground(pane)
 
@@ -281,6 +312,7 @@ class MainWindow(QMainWindow):
         self.fav_tree = FavoritesTree(self.cfg)
         self.fav_tree.navigate.connect(self.navigate_favorite)
         self.fav_tree.smart_requested.connect(self.smart_open)
+        self.fav_tree.open_file.connect(self._shell_open)
         self.fav_tree.changed.connect(self._rebuild_fav_bar)
         self.fav_tree.changed.connect(self._sync_fav_menu)
 
@@ -402,6 +434,8 @@ class MainWindow(QMainWindow):
         sb = self.statusBar()
         sb.addWidget(self.st_label, 1)
         sb.addPermanentWidget(self.st_count)
+        sb.setContextMenuPolicy(Qt.CustomContextMenu)
+        sb.customContextMenuRequested.connect(self._status_menu)
 
         self._build_menus()
         self._shortcuts()
@@ -550,7 +584,9 @@ class MainWindow(QMainWindow):
         panes_cfg = self.cfg.get("panes", config.load()["panes"])
         for i, pc in enumerate(panes_cfg[:2]):
             for t in pc.get("tabs", [{}]):
-                self.panes[i].add_pane(t.get("path", os.path.expanduser("~")))
+                self.panes[i].add_pane(t.get("path", os.path.expanduser("~")),
+                                       lock=t.get("lock", ""),
+                                       lock_root=t.get("lock_root", ""))
         single = self.cfg.get("single_pane", False)
         self.pane_r.setVisible(not single)
         if self.cfg.get("view_mode", VIEW_DETAIL) == VIEW_ICONS:
@@ -566,7 +602,8 @@ class MainWindow(QMainWindow):
                     wd.custom_title = t.get("title", "")
                     wd.tab_color = t.get("color", "")
                     if wd.custom_title:
-                        pt.setTabText(i, wd.custom_title)
+                        pre = "\U0001f512" if t.get("lock") else ""
+                        pt.setTabText(i, pre + wd.custom_title)
                     if wd.tab_color:
                         pt.tabBar().bg[wd] = QColor(wd.tab_color)
         self.fs_tree.setVisible(self.cfg.get("fs_tree", False))
@@ -579,13 +616,12 @@ class MainWindow(QMainWindow):
         cs = self.cfg.get("split_sizes")
         if isinstance(cs, list) and len(cs) == 3 and all(isinstance(x, int) and x > 0 for x in cs):
             try:
-                self.center_split.setSizes(cs[:3])
+                self.center_split.setSizes(cs)
             except Exception:
                 pass
         else:
-            # 首次运行无历史尺寸：记录合理默认值。收藏树默认隐藏，QSplitter
-            # 会在显示时把隐藏 widget 压到极小（约 40px），需在 toggle_fav_tree
-            # 显示时重新应用，见 _ensure_fav_tree_width。
+            # 首次运行无历史尺寸：收藏树默认隐藏时 QSplitter 会把它压到极小，
+            # 需在显示时重新应用，见 _ensure_fav_tree_width。
             total = max(self.center_split.width(), 900)
             self._default_center_sizes = [180, 220, total - 400]
         ps = self.cfg.get("pane_sizes")
@@ -749,8 +785,10 @@ class MainWindow(QMainWindow):
         box.exec()
         if box.clickedButton() is not yes:
             return
-        task = self.op.run_delete([e.path for e in sel])
-        task.sig.finished.connect(lambda *_: pane.refresh())
+        if delete_to_recycle_bin([e.path for e in sel]):
+            pane.refresh()
+        else:
+            QMessageBox.warning(self, "删除失败", "回收站操作失败（非 Windows 或权限不足）。")
 
     def purge_selected(self):
         """Shift+Delete：永久删除（不可恢复）。必须二次强确认。"""
@@ -815,13 +853,19 @@ class MainWindow(QMainWindow):
             self._shell_open(e.path)   # 用系统默认编辑器（记事本/VSCode 等关联）
 
     def search_here(self):
+        """在活动面板当前目录递归搜索：条件语法与智能文件夹一致，
+        结果直接展示在面板内，可右键"保存为智能文件夹"。"""
         pane = self.active_pane()
         root = pane.current_path()
         if not root:
             return
-        dlg = SearchDialog(root, pane.model.show_hidden, self)
-        if dlg.exec() and dlg.result_path:
-            self._reveal(dlg.result_path)
+        q, ok = QInputDialog.getText(
+            self, "在此目录中搜索",
+            "条件（空格与，分号或；支持 ext:/size:/date:/type:/tag:/:正则/）：")
+        if not ok:
+            return
+        q = q.strip()
+        pane.show_smart("搜索: " + (q or "*"), root, q)
 
     def _reveal(self, path):
         """在活动面板中定位到搜索结果：文件则进入其目录并选中。"""
@@ -869,6 +913,33 @@ class MainWindow(QMainWindow):
             task.sig.finished.connect(lambda *_: pane.refresh())
 
     # ---- 布局 / 视图 ------------------------------------------------------
+    def _status_menu(self, pos):
+        """状态栏右键：一站式视图开关（FC UiStatusBar）。"""
+        m = QMenu(self)
+        a_hid = m.addAction("显示隐藏文件")
+        a_hid.setCheckable(True)
+        a_hid.setChecked(self.cfg.get("show_hidden", False))
+        a_hid.triggered.connect(self.toggle_hidden)
+        a_dual = m.addAction("双面板模式")
+        a_dual.setCheckable(True)
+        a_dual.setChecked(not self.cfg.get("single_pane", False))
+        a_dual.triggered.connect(self.toggle_layout)
+        a_tree = m.addAction("文件系统树")
+        a_tree.setCheckable(True)
+        a_tree.setChecked(self.fs_tree.isVisible())
+        a_tree.triggered.connect(self.toggle_tree)
+        a_fav = m.addAction("收藏树")
+        a_fav.setCheckable(True)
+        a_fav.setChecked(self.fav_tree.isVisible())
+        a_fav.triggered.connect(self.toggle_fav_tree)
+        a_qv = m.addAction("快速查看面板")
+        a_qv.setCheckable(True)
+        a_qv.setChecked(self.quick_viewer.isVisible())
+        a_qv.triggered.connect(self.toggle_quick_viewer)
+        m.addSeparator()
+        m.addAction("单面板/双面板切换 (F10)", self.toggle_layout)
+        m.exec(self.statusBar().mapToGlobal(pos))
+
     def toggle_layout(self):
         vis = not self.pane_r.isVisible()
         self.pane_r.setVisible(vis)
@@ -927,11 +998,17 @@ class MainWindow(QMainWindow):
         if not raw:
             return
         if not name:
-            # 收藏树只发路径信号：按路径反查名称，供下面判定特殊目录兜底
+            # 收藏树只发路径信号：按路径反查名称（含收藏集），供下面判定特殊目录兜底
             for fav in self.cfg.get("favorites", []):
                 if isinstance(fav, dict) and fav.get("path") == raw:
                     name = fav.get("name")
                     break
+            if not name:
+                for items in self.cfg.get("fav_sets", {}).values():
+                    for fav in items:
+                        if isinstance(fav, dict) and fav.get("path") == raw:
+                            name = fav.get("name")
+                            break
         path = os.path.normpath(os.path.expandvars(os.path.expanduser(raw)))
         # 用户换机器/换账户后配置里的 home 路径可能失效：已知的特殊目录
         # 按收藏项名称用当前系统的真实位置兜底，避免"收藏点了完全没反应"。
@@ -1258,7 +1335,9 @@ class MainWindow(QMainWindow):
                 w = pt.widget(i)
                 tabs.append({"path": w.current_path(),
                              "title": getattr(w, "custom_title", ""),
-                             "color": getattr(w, "tab_color", "")})
+                             "color": getattr(w, "tab_color", ""),
+                             "lock": getattr(w, "tab_lock", ""),
+                             "lock_root": getattr(w, "lock_root", "")})
             panes.append({"tabs": tabs})
         self.cfg["panes"] = panes
         config.save(self.cfg)
