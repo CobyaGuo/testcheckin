@@ -34,23 +34,49 @@ from .viewer import QuickViewerPanel, SearchDialog, ViewerDialog
 _ASSETS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets")
 
 
-def make_app_icon():
-    """逐尺寸用 QPixmap 重建 QIcon，保证 Windows 任务栏拿到正确图标。
+_APP_ICON = None
 
-    直接 QIcon(.ico) 在部分 Windows 环境会让任务栏退回 pythonw.exe 默认图标；
-    这里把 ico 各尺寸先取成 QPixmap 再装进新 QIcon，与另两个入口的
-    QPixmap -> QIcon 路径一致（那条路径已验证任务栏显示正常）。
+
+def make_app_icon():
+    """进程内唯一的 QIcon（单例），纯代码绘制，无外部文件解码。
+
+    历史多次出现「任务栏图标有时是 pythonw 默认图标」，根因是旧实现：
+    1) 依赖外部 commander.ico，冷启动时 Qt 图像插件可能尚未就绪，
+       首帧解码失败后 Windows 任务栏就固化成默认图标，之后不再刷新；
+    2) 图标在 main() 与 MainWindow.__init__ 各构造一次（两份独立
+       QIcon），窗口级那份可能拿到空图标而覆盖应用级设置。
+    改为与另两个入口一致的 QPixmap 代码绘制路径，并用单例保证
+    app / window 用的是同一个 QIcon 对象。图标外观：文件夹 + 双栏分隔。
     """
-    ico_path = os.path.join(_ASSETS, "commander.ico")
-    if not os.path.exists(ico_path):
-        return QIcon()
-    src = QIcon(ico_path)
-    out = QIcon()
-    for size in (16, 20, 24, 32, 40, 48, 64, 128, 256):
-        pm = src.pixmap(size, size)
-        if not pm.isNull():
-            out.addPixmap(pm)
-    return out
+    global _APP_ICON
+    if _APP_ICON is not None:
+        return _APP_ICON
+    from PySide6.QtCore import QRectF
+    from PySide6.QtGui import QPainter, QPixmap, QBrush
+    pm = QPixmap(128, 128)
+    pm.fill(Qt.transparent)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.Antialiasing)
+    # 文件夹后片（浅色）
+    p.setPen(Qt.NoPen)
+    p.setBrush(QBrush(QColor("#3b82f6")))
+    p.drawRoundedRect(QRectF(12, 26, 104, 82), 12, 12)
+    p.setBrush(QBrush(QColor("#60a5fa")))
+    p.drawRoundedRect(QRectF(12, 20, 56, 26), 10, 10)
+    # 文件夹主体
+    p.setBrush(QBrush(QColor("#1d4ed8")))
+    p.drawRoundedRect(QRectF(8, 40, 112, 72), 12, 12)
+    # 双栏分隔：竖线 + 两条内容线，呼应双栏文件管理器
+    p.setPen(QPen(QColor("#dbeafe"), 4, Qt.SolidLine, Qt.RoundCap))
+    p.drawLine(64, 60, 64, 100)
+    p.setPen(QPen(QColor("#93c5fd"), 5, Qt.SolidLine, Qt.RoundCap))
+    p.drawLine(22, 62, 50, 62)
+    p.drawLine(22, 80, 50, 80)
+    p.drawLine(78, 62, 106, 62)
+    p.drawLine(78, 80, 106, 80)
+    p.end()
+    _APP_ICON = QIcon(pm)
+    return _APP_ICON
 
 
 TAB_COLORS = [("", "默认"), ("#3b82f6", "蓝"), ("#34d399", "绿"), ("#f59e0b", "橙"),
@@ -318,10 +344,8 @@ class MainWindow(QMainWindow):
         self._watch_timer.setSingleShot(True)
         self._watch_timer.timeout.connect(self._flush_dir_changes)
 
-        # ---- 图标（打包后同样以相对路径定位，便携可用）----
-        app_icon = make_app_icon()
-        if not app_icon.isNull():
-            self.setWindowIcon(app_icon)
+        # 图标统一由 main() 在 QApplication 上设置一次（单例 QIcon），
+        # 窗口继承应用图标；不要在 __init__ 里再构造第二份 QIcon。
 
         # ---- 收藏树面板（左，Alt+F 开关）----
         # 文件标签：启动时注入模型
@@ -668,6 +692,28 @@ class MainWindow(QMainWindow):
                 self.split.setSizes(ps)
             except Exception:
                 pass
+
+    def nativeEvent(self, eventType, message):
+        """处理单实例唤起消息：用单例图标重设窗口，修复任务栏残留默认图标。"""
+        if os.name == "nt" and bytes(eventType) == b"wm_generic" and message:
+            try:
+                import ctypes
+
+                class _MSG(ctypes.Structure):
+                    _fields_ = [("hwnd", ctypes.c_void_p),
+                                ("message", ctypes.c_uint),
+                                ("wParam", ctypes.c_size_t),
+                                ("lParam", ctypes.c_ssize_t),
+                                ("time", ctypes.c_ulong),
+                                ("pt", ctypes.c_long * 2)]
+
+                msg = ctypes.cast(message, ctypes.POINTER(_MSG)).contents
+                if msg.message == _WM_REFRESH_ICON:
+                    self.setWindowIcon(make_app_icon())
+                    return True, 0
+            except Exception:
+                pass
+        return super().nativeEvent(eventType, message)
 
     def closeEvent(self, ev):
         self.save_tabs()
@@ -1573,8 +1619,14 @@ class MainWindow(QMainWindow):
         self._schedule_quick_viewer()
 
 
+# 单实例唤起时请求旧进程重设图标的自定义消息（WM_APP + 0x31）。
+# 只传 0 参数，不跨进程传 HICON（句柄跨进程会失效），由旧进程自己用
+# 单例 make_app_icon() 重设，避免任务栏残留默认图标。
+_WM_REFRESH_ICON = 0x8000 + 0x31
+
+
 def _activate_existing_window():
-    """唤起已运行的 Commander 主窗口到前台，返回是否成功。"""
+    """唤起已运行的 Commander 主窗口到前台，并请求其重设图标。"""
     import ctypes
     title = "Commander — 文件管理"
     hwnd = ctypes.windll.user32.FindWindowW(None, title)
@@ -1583,6 +1635,10 @@ def _activate_existing_window():
     SW_RESTORE = 9
     ctypes.windll.user32.ShowWindow(hwnd, SW_RESTORE)
     ctypes.windll.user32.SetForegroundWindow(hwnd)
+    try:
+        ctypes.windll.user32.PostMessageW(hwnd, _WM_REFRESH_ICON, 0, 0)
+    except Exception:
+        pass
     return True
 
 
@@ -1599,26 +1655,40 @@ def _try_single_instance():
     return True
 
 
-def main():
-    if os.name == "nt":
-        # 进程级设置必须早于 QApplication / 任何窗口创建，否则 Windows 任务栏
-        # 会先按 pythonw.exe 注册按钮，之后再改 AppUserModelID 也不会刷新，
-        # 表现为图标变成通用「应用」图标或干脆消失。
+def _register_app_identity():
+    """注册进程图标身份；幂等，供入口与直接运行 main.py 时兜底。
+
+    FreeConsole 与 AppUserModelID 必须解耦：FreeConsole 在部分启动方式下
+    会抛异常，若共用 try 会连带吞掉 ID 注册，导致任务栏退回默认图标。
+    v3：换 ID 迫使 Windows 为任务栏按钮重建图标缓存。
+    """
+    if os.name != "nt":
+        return
+    try:
+        import ctypes
         try:
-            import ctypes
             ctypes.windll.kernel32.FreeConsole()
-            # v2：换 ID 迫使 Windows 为任务栏按钮重建图标缓存（旧 ID 可能
-            # 已被缓存成 pythonw.exe 的默认图标，换 ID 后重新注册）。
-            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
-                "cobyg.desktools.commander.v2")
         except Exception:
             pass
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
+            "cobyg.desktools.commander.v3")
+    except Exception:
+        pass
+
+
+def main():
+    # 尽早注册：早于 QApplication / 任何窗口创建，更理想是在 commander.pyw
+    # 入口最顶部（那里已调用 _early_app_identity），此处为 -m/直接运行的兜底。
+    _register_app_identity()
     if not _try_single_instance():
         sys.exit(0)
     app = QApplication(sys.argv)
     app.setApplicationName("commander")
     # 主题由 MainWindow._restore() 按配置统一应用一次：避免启动阶段重复
     # setStyleSheet（约 32ms/次），light 用户也不会先闪一帧 dark。
+    # 图标只在 app 上设置一次（单例 QIcon），窗口继承应用图标；不要在
+    # MainWindow.__init__ 里再构造第二份 QIcon，两份实例会导致窗口级图标
+    # 可能为空而覆盖应用级设置。
     app_icon = make_app_icon()
     if not app_icon.isNull():
         app.setWindowIcon(app_icon)
