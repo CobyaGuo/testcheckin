@@ -14,7 +14,7 @@ import subprocess
 import sys
 import threading
 
-from PySide6.QtCore import QSize, Qt, QTimer
+from PySide6.QtCore import QFileSystemWatcher, QSize, Qt, QTimer
 from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (QApplication, QFileDialog, QHBoxLayout, QInputDialog,
                                QLabel, QLineEdit, QMainWindow, QMenu, QMessageBox,
@@ -135,6 +135,7 @@ class PaneTabs(QTabWidget):
             self.removeTab(idx)
             w.deleteLater()
         other.add_pane(path, custom, color)
+        self.main._sync_dir_watch(w, path)   # 本侧少了前台 tab，重算监听
         self.main.save_tabs()
 
     def _tab_menu(self, pos):
@@ -200,6 +201,7 @@ class PaneTabs(QTabWidget):
         pane.quick_searched.connect(lambda t: self.main.quick_search_display(t))
         pane.path_changed.connect(lambda p, tp=pane: self._retitle(pane, p))
         pane.path_changed.connect(lambda p, tp=pane: self.main._pane_path_changed(tp, p))
+        pane.path_changed.connect(lambda p, tp=pane: self.main._sync_dir_watch(tp, p))
         pane.focus_requested.connect(lambda tp=pane: self.main._pane_focused(tp))
         pane.filter_both.connect(lambda t, tp=pane: self.main.apply_filter_both(t))
         idx = self.addTab(pane, title or os.path.basename(path) or path)
@@ -226,6 +228,8 @@ class PaneTabs(QTabWidget):
         w = self.widget(idx)
         self.removeTab(idx)
         w.deleteLater()
+        # 关闭的可能正是被监听的前台 tab：延迟到删除完成后重算
+        QTimer.singleShot(0, self.main._sync_dir_watch)
         self.main.save_tabs()
 
     def current_pane(self):
@@ -234,7 +238,11 @@ class PaneTabs(QTabWidget):
     def _on_tab_switched(self, idx):
         pane = self.widget(idx)
         if pane and self.main:
+            # 切到前台的 tab：全量刷新一次，并重挂目录监听；
+            # 刚 add_pane 时 path 尚未加载，_on_tab_switched 会被 setCurrentIndex
+            # 触发，此时 path 为空，两个动作都会自行跳过，真正的加载由 navigate 完成。
             self.main._pane_focused(pane)
+            self.main._on_tab_foreground(pane)
 
 
 class MainWindow(QMainWindow):
@@ -248,6 +256,17 @@ class MainWindow(QMainWindow):
         self.op = OpRunner(self, self.op_queue)
         self.panes = []
         self._active_idx = self.cfg.get("active_pane", 0)
+
+        # ---- 目录变更监听（只监听双栏前台目录）----
+        # 后台 tab 完全不挂监听；只有被点开成为前台的 tab 才刷新。
+        self._dir_watcher = QFileSystemWatcher(self)
+        self._dir_watcher.directoryChanged.connect(self._on_dir_changed)
+        self._watched_paths = {}      # path -> [pane]，含左右可能同目录
+        self._dirty_paths = set()     # 待刷新的目录（防抖窗口内累积）
+        self._watch_last = {}         # path -> 上次自动刷新时间（冷却）
+        self._watch_timer = QTimer(self)
+        self._watch_timer.setSingleShot(True)
+        self._watch_timer.timeout.connect(self._flush_dir_changes)
 
         # ---- 图标（打包后同样以相对路径定位，便携可用）----
         icon_path = os.path.join(_ASSETS, "commander.ico")
@@ -387,6 +406,7 @@ class MainWindow(QMainWindow):
         self._build_menus()
         self._shortcuts()
         self._restore()
+        QTimer.singleShot(0, self._sync_dir_watch)  # 初始 tab 加载后挂监听
         self._show_config_warnings()
 
     def _show_config_warnings(self):
@@ -583,6 +603,9 @@ class MainWindow(QMainWindow):
         self.cfg["split_sizes"] = list(self.center_split.sizes())
         self.cfg["pane_sizes"] = list(self.split.sizes())
         config.save(self.cfg)
+        self._watch_timer.stop()
+        for p in list(self._dir_watcher.directories()):
+            self._dir_watcher.removePath(p)
         super().closeEvent(ev)
 
     # ---- 面板定位 --------------------------------------------------------
@@ -850,6 +873,7 @@ class MainWindow(QMainWindow):
         vis = not self.pane_r.isVisible()
         self.pane_r.setVisible(vis)
         self.cfg["single_pane"] = not vis
+        self._sync_dir_watch()           # 整栏隐藏/显示后重算前台监听
 
     def toggle_hidden(self):
         on = not self.cfg.get("show_hidden", False)
@@ -1144,6 +1168,71 @@ class MainWindow(QMainWindow):
         # 只有活动侧的活动标签才联动共享树
         if pane is self.active_pane():
             self.sync_fs_tree(path)
+
+    # ---- 前台目录监听（策略 A）-------------------------------------------
+    def _foreground_panes(self):
+        """双栏各自当前 tab 的面板集合（隐藏的整栏不计入前台）。"""
+        out = []
+        for pt in self.panes:
+            if pt.isVisible():
+                pane = pt.currentWidget()
+                if pane is not None and pane not in out:
+                    out.append(pane)
+        return out
+
+    def _is_foreground(self, pane):
+        return pane in self._foreground_panes()
+
+    def _sync_dir_watch(self, pane=None, path=None):
+        """按当前前台面板重算监听路径；后台 tab 不挂监听。
+        路径未变则完全不动，避免刷新完成后 path_changed 造成的无谓 remove/add。"""
+        want = {}
+        for p in self._foreground_panes():
+            pp = p.current_path()
+            if pp and p.stack.currentIndex() != 2:   # 智能搜索结果页不监听
+                want.setdefault(pp, []).append(p)
+        current = set(self._dir_watcher.directories())
+        target = set(want)
+        for old in current - target:
+            self._dir_watcher.removePath(old)
+        for new in target - current:
+            self._dir_watcher.addPath(new)
+        self._watched_paths = want
+
+    def _on_tab_foreground(self, pane):
+        """tab 成为前台：全量刷新一次 + 重挂监听。"""
+        if pane is None:
+            return
+        path = pane.current_path()
+        if path:
+            pane.refresh()               # 刷新前会保存选中/滚动，完成后恢复
+        self._sync_dir_watch(pane, path)
+
+    def _on_dir_changed(self, path):
+        """目录内容变化：先入队去重，防抖后统一处理。"""
+        # 回调触发时二次校验：该路径仍被前台面板监听才认
+        if path not in self._watched_paths:
+            return
+        self._dirty_paths.add(path)
+        self._watch_timer.start(250)     # 防抖：批量写入合并为一次
+        self._watch_last.setdefault(path, 0)
+
+    def _flush_dir_changes(self):
+        import time
+        now = time.monotonic()
+        for path in list(self._dirty_paths):
+            self._dirty_paths.discard(path)
+            # 冷却：高频写入目录 1 秒内只刷一次，避免事件风暴下反复全量扫描
+            if now - self._watch_last.get(path, 0) < 1.0:
+                continue
+            self._watch_last[path] = now
+            for pane in self._watched_paths.get(path, []):
+                # 执行时再次校验前台身份：防抖窗口内可能已经切走
+                if not self._is_foreground(pane):
+                    continue
+                if pane.current_path() != path:
+                    continue
+                pane.refresh()
 
     def _pane_focused(self, pane):
         """点到某面板（即使不改路径）也把树同步到它 + 描边高亮。"""

@@ -10,7 +10,7 @@ from PySide6.QtGui import (QAction, QGuiApplication, QColor, QPainter, QPen,
                            QStandardItem)
 from PySide6.QtWidgets import QListView
 from . import icons
-from PySide6.QtWidgets import (QApplication, QComboBox, QFileDialog,
+from PySide6.QtWidgets import (QAbstractItemView, QApplication, QComboBox, QFileDialog,
                                QFileSystemModel, QHBoxLayout, QHeaderView,
                                QLabel, QLineEdit,
                                QListView, QMenu, QPushButton, QSizePolicy, QSplitter,
@@ -254,6 +254,10 @@ class FilePane(QWidget):
         self._view_mode = VIEW_DETAIL
         self._tree_visible = False
         self._strip_side = strip_side
+        # 刷新前后的视图状态保存/恢复（选中单条目 + 顶部可见条目路径）
+        # 异步扫描期间用户若改选，恢复时以用户当前选择为准。
+        self._nav_snapshot = None
+        self._selection_touched = False
 
         # ---- 模型 ----
         self.model = FsModel(self)
@@ -262,6 +266,12 @@ class FilePane(QWidget):
         self.model.loaded.connect(self._on_loaded)
         self.model.load_failed.connect(self._on_load_failed)
         self.smart_done.connect(self._on_smart_results)
+        # 区分「模型重置导致的选中清空」与「用户主动改选」：
+        # 刷新完成后 beginResetModel/endResetModel 会连带清空选中并发信号，
+        # 这段窗口内的 selectionChanged 不算用户操作，恢复时不能被它误导。
+        self._model_resetting = False
+        self.model.modelAboutToBeReset.connect(self._on_model_reset_begin)
+        self.model.modelReset.connect(self._on_model_reset_end)
 
         # ---- 路径栏 ----
         self.path_edit = QComboBox()
@@ -376,6 +386,7 @@ class FilePane(QWidget):
         self.table.setContextMenuPolicy(Qt.CustomContextMenu)
         self.table.customContextMenuRequested.connect(self._context_menu)
         self.table.doubleClicked.connect(self._on_double)
+        self.table.selectionModel().selectionChanged.connect(self._on_selection_changed)
         self.table.selectionModel().selectionChanged.connect(lambda *_: self.status_changed.emit())
 
         # ---- 图标视图 ----
@@ -391,6 +402,7 @@ class FilePane(QWidget):
         self.icons.customContextMenuRequested.connect(self._context_menu)
         self.icons.doubleClicked.connect(self._on_double)
         self.icons.setModel(self.icon_proxy)
+        self.icons.selectionModel().selectionChanged.connect(self._on_selection_changed)
         self.icons.selectionModel().selectionChanged.connect(
             lambda *_: self.status_changed.emit())
 
@@ -597,14 +609,83 @@ class FilePane(QWidget):
             self.navigate(self._history[self._hist_pos], push_history=False)
 
     def refresh(self):
+        """刷新当前目录：异步扫描前记录视图位置，扫描完成后恢复。"""
+        self._snapshot_nav_state()
         self.model.refresh()
 
     def current_path(self):
         return self.model.path
 
+    # ---- 刷新前后的视图状态保持 ----------------------------------------
+    def _snapshot_nav_state(self):
+        """在刷新发起的瞬间记录状态；只有刷新完成仍是同一目录才会恢复。"""
+        self._selection_touched = False
+        path = self.model.path
+        if not path or self.stack.currentIndex() == 2:
+            self._nav_snapshot = None       # 智能搜索结果页不参与
+            return
+        view = self._cur_view()
+        cur = self.current_entry()
+        top = self._first_visible_entry(view)
+        self._nav_snapshot = {
+            "path": path,
+            "view": 0 if view is self.table else 1,
+            "current": cur.path if cur else None,
+            "top": top.path if top else None,
+        }
+
+    def _first_visible_entry(self, view):
+        """当前视图最上面可见行的条目（用于把滚动位置还原到同一条目）。"""
+        try:
+            idx = view.indexAt(QPoint(0, 0))
+            if not idx.isValid():
+                return None
+            proxy = self.proxy if view is self.table else self.icon_proxy
+            src = proxy.mapToSource(proxy.index(idx.row(), 0))
+            return src.data(Qt.UserRole)
+        except Exception:
+            return None
+
+    def _restore_nav_state(self, path):
+        """加载完成后恢复选中与滚动；换目录/用户已改选/条目失效则相应跳过。"""
+        snap = self._nav_snapshot
+        self._nav_snapshot = None
+        if not snap or snap.get("path") != path:
+            return                          # 导航到新目录：不恢复旧目录的位置
+        view = self.table if snap["view"] == 0 else self.icons
+        proxy = self.proxy if snap["view"] == 0 else self.icon_proxy
+
+        # 选中：快照里的 current 在用户改选时已被 _on_selection_changed 更新，
+        # 因此这里恢复的始终是用户最新的选择。
+        if snap.get("current"):
+            target = None
+            for i, e in enumerate(self.model.entries):
+                if e.path == snap["current"]:
+                    target = i
+                    break
+            if target is not None:
+                pr = proxy.mapFromSource(self.model.index(target, 0)).row()
+                if pr >= 0:
+                    idx = proxy.index(pr, 0)
+                    view.setCurrentIndex(idx)
+                    if view is self.table:
+                        view.selectRow(pr)
+
+        # 滚动：按顶部可见条目的新行号定位（不保存像素偏移）
+        if snap.get("top"):
+            for i, e in enumerate(self.model.entries):
+                if e.path == snap["top"]:
+                    pr = proxy.mapFromSource(self.model.index(i, 0)).row()
+                    if pr >= 0:
+                        view.scrollTo(proxy.index(pr, 0),
+                                      QAbstractItemView.PositionAtTop)
+                    break
+
     def _on_loaded(self, path):
         self._set_path_text(path)
         self.path_changed.emit(path)
+        # 等代理模型按新数据重排完成（layoutChanged）后再恢复位置
+        QTimer.singleShot(0, lambda p=path: self._restore_nav_state(p))
 
     _drive_info_cache = {}   # 盘符 -> (时间戳, 文本, 百分比)，避免频繁 disk_usage
 
@@ -653,6 +734,22 @@ class FilePane(QWidget):
         self.status_changed.emit()
 
     # ---- 选择（两种视图通用）---------------------------------------------
+    def _on_model_reset_begin(self):
+        self._model_resetting = True
+
+    def _on_model_reset_end(self):
+        # 让本次 reset 连锁触发的 selectionChanged 全部走完再解除标记
+        QTimer.singleShot(0, lambda: setattr(self, "_model_resetting", False))
+
+    def _on_selection_changed(self, *_):
+        if self._model_resetting or self._nav_snapshot is None:
+            return
+        # 刷新发起后用户若改选，记下新选择：刷新完成后按它恢复，
+        # 而不是恢复发起瞬间保存的旧选择（模型 reset 会清空当前选中）。
+        self._selection_touched = True
+        cur = self.current_entry()
+        self._nav_snapshot["current"] = cur.path if cur else None
+
     def _cur_view(self):
         return self.table if self.stack.currentIndex() == 0 else self.icons
 
