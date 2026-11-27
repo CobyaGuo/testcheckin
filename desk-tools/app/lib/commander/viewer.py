@@ -90,6 +90,7 @@ class SearchDialog(QDialog):
 
     item_found = Signal(str, str)     # 目录, 文件名
     search_done = Signal(int, bool)   # 找到数量, 是否被停止
+    result_opened = Signal(str)       # 双击结果：交给主面板定位（对话框保持打开）
 
     def __init__(self, root, show_hidden=False, parent=None):
         super().__init__(parent)
@@ -102,7 +103,8 @@ class SearchDialog(QDialog):
 
         h = QHBoxLayout()
         self.input = QLineEdit()
-        self.input.setPlaceholderText("输入名称关键字（支持 *.py 通配）")
+        self.input.setPlaceholderText(
+            "名称关键字 / *.py 通配 / ext:py / size:>10mb / /正则/（空格与，分号或）")
         self.btn = QPushButton("搜索")
         self.btn.setObjectName("accent")
         self.btn.clicked.connect(self.start)
@@ -130,19 +132,21 @@ class SearchDialog(QDialog):
     def start(self):
         if self.btn.text() == "停止":
             self._stop = True
+            self.lb.setText("搜索范围：%s    正在停止…" % self.root)
             return
         pattern = self.input.text().strip()
         if not pattern:
             return
+        # 与面板智能搜索共用条件解析：ext:/size:/date:/type:/tag:/正则/
+        # + 名称子串 + fnmatch 通配符（*.py）。局部导入避免模块循环依赖。
+        from .pane import compile_query
+        groups = compile_query(pattern)
         self.tree.clear()
         self._stop = False
         self.btn.setText("停止")
+        self.lb.setText("搜索范围：%s    搜索中…" % self.root)
 
-        import fnmatch
         import threading
-
-        low = pattern.lower()
-        use_fn = any(c in pattern for c in "*?[")
 
         def work():
             found = 0
@@ -152,8 +156,16 @@ class SearchDialog(QDialog):
                 if not self.show_hidden:
                     dirs[:] = [d for d in dirs if not d.startswith(".")]
                 for n in dirs + files:
-                    hit = fnmatch.fnmatch(n.lower(), low) if use_fn else low in n.lower()
-                    if hit:
+                    if self._stop:
+                        break
+                    p = os.path.join(dirpath, n)
+                    try:
+                        st = os.stat(p)
+                    except OSError:
+                        continue
+                    is_dir = n in dirs
+                    if any(all(pred(n, p, st, is_dir) for pred in grp if pred)
+                           for grp in groups):
                         found += 1
                         self.item_found.emit(dirpath, n)
             self.search_done.emit(found, self._stop)
@@ -174,7 +186,12 @@ class SearchDialog(QDialog):
         path = item.data(0, Qt.UserRole)
         if path and os.path.exists(path):
             self.result_path = path
-            self.accept()
+            self.result_opened.emit(path)   # 非模态：主面板定位，对话框不关闭
+
+    def closeEvent(self, event):
+        # 用户中途关窗时让后台搜索尽快退出，避免线程继续 emit 到已关闭窗口
+        self._stop = True
+        super().closeEvent(event)
 
 
 class QuickViewerPanel(QWidget):

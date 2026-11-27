@@ -889,7 +889,8 @@ class FilePane(QWidget):
         tip.setFlags(Qt.NoItemFlags)
         root.appendRow(tip)
         self.stack.setCurrentWidget(self.results_list)
-        task = _SmartSearch(self, self._smart_epoch, scope, query)
+        task = _SmartSearch(self, self._smart_epoch, scope, query,
+                            getattr(self.model, "show_hidden", False))
         QThreadPool.globalInstance().start(task)
 
     @Slot(int, object, bool, bool)
@@ -1072,6 +1073,20 @@ class _ActiveGlow(QWidget):
         p.end()
 
 
+def compile_query(query):
+    """把搜索条件编译为 OR 组：每组是 AND 谓词列表。
+
+    独立搜索对话框与面板内智能搜索共用同一套语法：
+      ext:py,js / size:>10mb / date:>2025-01-01 / type:dir|file
+      tag:红 / /正则/ / 名称子串 / fnmatch 通配符（*.py、report?.txt）
+    空格与 & 为 AND，分号为 OR。
+    """
+    ors = [t.strip() for t in (query or "").split(";") if t.strip()]
+    return [[p for p in (_SmartSearch._mk_pred(t)
+                         for t in o.replace("&", " ").split()) if p] or [None]
+            for o in ors] or [[None]]
+
+
 class _SmartSearch(QRunnable):
     """智能文件夹后台递归搜索：空格 AND，分号 OR；结果流式回传。
 
@@ -1095,16 +1110,15 @@ class _SmartSearch(QRunnable):
     class _Sig:
         pass
 
-    def __init__(self, pane, epoch, scope, query):
+    def __init__(self, pane, epoch, scope, query, show_hidden=False):
         super().__init__()
         self.pane, self.epoch, self.scope = pane, epoch, scope
-        ors = [t.strip() for t in (query or "").split(";") if t.strip()]
-        # 空格与 & 均为 AND（与快速过滤语法一致），分号为 OR
-        self.or_groups = [[self._mk_pred(t) for t in o.replace("&", " ").split()] or [None]
-                          for o in ors] or [[None]]
+        self.show_hidden = bool(show_hidden)
+        self.or_groups = compile_query(query)
 
     # ---- 条件解析 --------------------------------------------------------
-    def _mk_pred(self, t):
+    @staticmethod
+    def _mk_pred(t):
         t = t.strip()
         if not t:
             return None
@@ -1125,19 +1139,24 @@ class _SmartSearch(QRunnable):
                 exts = {"." + x.lower().lstrip(".") for x in v.split(",") if x.strip()}
                 return lambda n, p, st, d: (not d) and                     os.path.splitext(n)[1].lower() in exts
             if k == "size":
-                return self._size_pred(v)
+                return _SmartSearch._size_pred(v)
             if k == "date":
-                return self._date_pred(v)
+                return _SmartSearch._date_pred(v)
             if k == "type":
                 if v.lower().startswith("d"):
                     return lambda n, p, st, d: d
                 if v.lower().startswith("f"):
                     return lambda n, p, st, d: not d
             elif k == "tag":
-                return self._tag_pred(v)
+                return _SmartSearch._tag_pred(v)
+        # fnmatch 通配符：*.py / report?.txt / [ab]*.log（旧对话框原生支持）
+        if any(c in t for c in "*?["):
+            import fnmatch
+            return lambda n, p, st, d, _p=t.lower(): fnmatch.fnmatch(n.lower(), _p)
         return lambda n, p, st, d, _t=t.lower(): _t in n.lower()
 
-    def _size_pred(self, v):
+    @staticmethod
+    def _size_pred(v):
         import operator
         import re
         m = re.match(r"(>=|<=|>|<)?\s*([\d.]+)\s*([bkmg]?)", v.lower())
@@ -1145,10 +1164,11 @@ class _SmartSearch(QRunnable):
             return None
         f = {">": operator.gt, "<": operator.lt,
              ">=": operator.ge, "<=": operator.le}[m.group(1) or ">"]
-        val = float(m.group(2)) * self._UNITS[m.group(3) or "b"]
+        val = float(m.group(2)) * _SmartSearch._UNITS[m.group(3) or "b"]
         return lambda n, p, st, d: (not d) and st is not None and f(st.st_size, val)
 
-    def _date_pred(self, v):
+    @staticmethod
+    def _date_pred(v):
         import re
         m = re.match(r"(>=|<=|>|<)?\s*(\d{4})(?:-(\d{2}))?(?:-(\d{2}))?", v)
         if not m:
@@ -1163,7 +1183,8 @@ class _SmartSearch(QRunnable):
             return lambda n, p, st, d: st is not None and st.st_mtime < ts
         return lambda n, p, st, d: st is not None and st.st_mtime >= ts
 
-    def _tag_pred(self, v):
+    @staticmethod
+    def _tag_pred(v):
         vv = v.lower().lstrip("#")
         want = set()
         if len(vv) == 6:
@@ -1172,7 +1193,7 @@ class _SmartSearch(QRunnable):
                 want.add("#" + vv)
             except ValueError:
                 pass
-        for cn, cv in self._TAG_NAMES.items():
+        for cn, cv in _SmartSearch._TAG_NAMES.items():
             if cn in vv or vv in cn:
                 want.add(cv)
         if not want:
@@ -1190,7 +1211,12 @@ class _SmartSearch(QRunnable):
         batch = []
         done = False
         for root, dirs, files in os.walk(os.path.abspath(self.scope)):
-            dirs[:] = sorted(d for d in dirs if d not in self.SKIP_DIRS)
+            # 关闭"显示隐藏"时排除所有点开头目录（.venv/.idea 等），
+            # 打开时仍跳过 SKIP_DIRS 里的体积黑洞（.git/node_modules 等）。
+            skip = set(self.SKIP_DIRS)
+            if not self.show_hidden:
+                skip.update(d for d in dirs if d.startswith("."))
+            dirs[:] = sorted(d for d in dirs if d not in skip)
             for n in dirs + files:
                 p = os.path.join(root, n)
                 is_dir = n in dirs

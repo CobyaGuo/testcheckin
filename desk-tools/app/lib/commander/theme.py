@@ -147,6 +147,10 @@ def apply_theme(app, name="dark"):
     同时把主题名存到 app 属性上，供动态样式（如驱动器占用条）读取。
     """
     from PySide6.QtGui import QFont
+    # 幂等：同一主题重复调用时跳过全量 setStyleSheet（大样式表约 30ms/次），
+    # 避免启动阶段与运行时切换主题的无谓开销；图标缓存也不必重复清空。
+    if app.property("theme") == name and app.styleSheet():
+        return
     qss = QSS if name == "dark" else LIGHT_QSS
     app.setStyleSheet(qss.replace("__UI_FONT__", UI_FONT))
     app.setFont(QFont(UI_FONT, 9))

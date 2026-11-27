@@ -29,7 +29,7 @@ from .operations import OpQueue, OpRunner, delete_to_recycle_bin
 from .pane import (VIEW_DETAIL, VIEW_ICONS, FilePane, FileSystemTree)
 from .queuebar import FavoritesTree, QueueBar
 from .theme import apply_theme
-from .viewer import QuickViewerPanel, ViewerDialog
+from .viewer import QuickViewerPanel, SearchDialog, ViewerDialog
 
 _ASSETS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets")
 
@@ -853,19 +853,31 @@ class MainWindow(QMainWindow):
             self._shell_open(e.path)   # 用系统默认编辑器（记事本/VSCode 等关联）
 
     def search_here(self):
-        """在活动面板当前目录递归搜索：条件语法与智能文件夹一致，
-        结果直接展示在面板内，可右键"保存为智能文件夹"。"""
+        """独立搜索窗口：搜索是临时操作，不占用活动面板，搜索期间照常浏览。
+
+        支持名称子串、fnmatch 通配符（*.py）与 ext:/size:/date:/type:/tag:/正则/
+        条件语法；有停止按钮、两列结果（文件 + 所在目录），并遵循"显示隐藏"。
+        """
         pane = self.active_pane()
         root = pane.current_path()
         if not root:
             return
-        q, ok = QInputDialog.getText(
-            self, "在此目录中搜索",
-            "条件（空格与，分号或；支持 ext:/size:/date:/type:/tag:/:正则/）：")
-        if not ok:
-            return
-        q = q.strip()
-        pane.show_smart("搜索: " + (q or "*"), root, q)
+        old = getattr(self, "_search_dialog", None)
+        if old is not None:
+            try:
+                old.close()
+            except RuntimeError:
+                pass
+        dlg = SearchDialog(root, pane.model.show_hidden, self)
+        dlg.result_opened.connect(self._reveal)
+        # 保活到搜索结束：后台线程可能仍在 emit，提前释放引用会有竞态
+        if not hasattr(self, "_search_dialogs"):
+            self._search_dialogs = []
+        self._search_dialogs.append(dlg)
+        self._search_dialog = dlg
+        dlg.show()
+        dlg.raise_()
+        dlg.activateWindow()
 
     def _reveal(self, path):
         """在活动面板中定位到搜索结果：文件则进入其目录并选中。"""
@@ -1531,7 +1543,8 @@ def main():
         sys.exit(0)
     app = QApplication(sys.argv)
     app.setApplicationName("commander")
-    apply_theme(app)
+    # 主题由 MainWindow._restore() 按配置统一应用一次：避免启动阶段重复
+    # setStyleSheet（约 32ms/次），light 用户也不会先闪一帧 dark。
     icon_path = os.path.join(_ASSETS, "commander.ico")
     if os.path.exists(icon_path):
         from PySide6.QtGui import QColor, QIcon as _QIcon
